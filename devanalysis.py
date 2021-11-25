@@ -29,7 +29,8 @@ def do_query_with_aggregation(elastic_search: Elasticsearch, aggregation_name: s
         search_results['aggregations'][aggregation_name]['buckets']]
 
     result_dataframe: pd.DataFrame = pd.DataFrame(results)
-    result_dataframe = result_dataframe.set_index(event_date_field)
+    if not result_dataframe.empty:
+        result_dataframe = result_dataframe.set_index(event_date_field)
     return result_dataframe
 
 
@@ -77,11 +78,40 @@ def get_merge_requests(elastic_search: Elasticsearch, user_login: str,
     return result_dataframe
 
 
+def get_requests_merged(elastic_search: Elasticsearch, user_login: str,
+                        calendar_interval: str = "month"):
+    print("Obtaining pull requests merged made by user: %s" % user_login)
+    aggregation_name: str = "requests_merged"
+
+    result_dataframe: pd.DataFrame = do_query_with_aggregation(elastic_search, aggregation_name, query={
+        "bool": {
+            "must": [
+                {
+                    "match": {"user.login": user_login}
+                },
+                {
+                    "match": {"merged": "true"}
+                }],
+            "must_not": {
+                "match": {"merged_by.login": user_login}
+            }
+        }
+    }, date_histogram={
+        "field": "merged_at",
+        "calendar_interval": calendar_interval
+    })
+
+    return result_dataframe
+
+
 def analyse_user(elastic_search: Elasticsearch, user_login: str):
     merges_performed_dataframe: pd.DataFrame = get_merges_performed(elastic_search, user_login)
     merge_requests_dataframe: pd.DataFrame = get_merge_requests(elastic_search, user_login)
+    requests_merged_dataframe: pd.DataFrame = get_requests_merged(elastic_search, user_login)
 
-    consolidated_dataframe: pd.DataFrame = pd.concat([merges_performed_dataframe, merge_requests_dataframe], axis=1)
+    consolidated_dataframe: pd.DataFrame = pd.concat([merges_performed_dataframe, merge_requests_dataframe,
+                                                      requests_merged_dataframe], axis=1)
+    consolidated_dataframe = consolidated_dataframe.fillna(0)
 
     plt.rcParams['figure.figsize'] = (10, 5)
     plt.style.use('fivethirtyeight')
@@ -105,8 +135,9 @@ def main():
                                                             })
     mergers: List[str] = [merger_data['key'] for merger_data in
                           search_results['aggregations'][aggregation_name]['buckets']]
-    user_login: str = mergers[0]
-    analyse_user(elastic_search, user_login)
+    # user_login: str = mergers[0]
+    for user_login in mergers:
+        analyse_user(elastic_search, user_login)
 
 
 if __name__ == "__main__":
