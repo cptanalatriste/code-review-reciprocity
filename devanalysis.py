@@ -2,12 +2,16 @@ from datetime import datetime
 from typing import List, Any
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 import elasticsearch
 from elasticsearch import Elasticsearch
 
 from config import ELASTICSEARCH_HOST
 from dataloading import PULL_REQUEST_INDEX
+
+MERGES_PERFORMED_COLUMN: str = "merges_performed"
+MERGES_SUCCESSFUL_COLUMN: str = "requests_merged"
 
 
 def do_query_with_aggregation(elastic_search: Elasticsearch, aggregation_name: str, query: dict[str, Any],
@@ -36,10 +40,7 @@ def do_query_with_aggregation(elastic_search: Elasticsearch, aggregation_name: s
 
 def get_merges_performed(elastic_search: Elasticsearch, user_login: str,
                          calendar_interval: str = "month") -> pd.DataFrame:
-    print("Obtaining merges performed by user: %s" % user_login)
-    aggregation_name: str = "merges_performed"
-
-    result_dataframe: pd.DataFrame = do_query_with_aggregation(elastic_search, aggregation_name, query={
+    result_dataframe: pd.DataFrame = do_query_with_aggregation(elastic_search, MERGES_PERFORMED_COLUMN, query={
         "bool": {
             "must": {
                 "match": {"merged_by.login": user_login}
@@ -58,7 +59,6 @@ def get_merges_performed(elastic_search: Elasticsearch, user_login: str,
 
 def get_merge_requests(elastic_search: Elasticsearch, user_login: str,
                        calendar_interval: str = "month") -> pd.DataFrame:
-    print("Obtaining pull requests by user: %s" % user_login)
     aggregation_name: str = "merge_requests"
 
     result_dataframe: pd.DataFrame = do_query_with_aggregation(elastic_search, aggregation_name, query={
@@ -80,10 +80,7 @@ def get_merge_requests(elastic_search: Elasticsearch, user_login: str,
 
 def get_requests_merged(elastic_search: Elasticsearch, user_login: str,
                         calendar_interval: str = "month"):
-    print("Obtaining pull requests merged made by user: %s" % user_login)
-    aggregation_name: str = "requests_merged"
-
-    result_dataframe: pd.DataFrame = do_query_with_aggregation(elastic_search, aggregation_name, query={
+    result_dataframe: pd.DataFrame = do_query_with_aggregation(elastic_search, MERGES_SUCCESSFUL_COLUMN, query={
         "bool": {
             "must": [
                 {
@@ -104,6 +101,28 @@ def get_requests_merged(elastic_search: Elasticsearch, user_login: str,
     return result_dataframe
 
 
+def plot_dataframe(consolidated_dataframe: pd.DataFrame, user_login: str):
+    plt.rcParams['figure.figsize'] = (10, 5)
+    plt.style.use('fivethirtyeight')
+    ax = consolidated_dataframe.plot(linewidth=2, fontsize=12, title="User %s" % user_login)
+    ax.set_xlabel('Date')
+    ax.legend(fontsize=12)
+    plt.show()
+
+
+def plot_offered_vs_given(consolidated_dataframe: pd.DataFrame, user_login: str):
+    plt.figure(figsize=(12, 6))
+    sns.jointplot(
+        x=MERGES_PERFORMED_COLUMN, y=MERGES_SUCCESSFUL_COLUMN,
+        edgecolor="white",
+        data=consolidated_dataframe,
+    )
+    plt.xlabel("Performed")
+    plt.ylabel("Requested")
+    plt.title("User %s" % user_login)
+    plt.show()
+
+
 def analyse_user(elastic_search: Elasticsearch, user_login: str):
     merges_performed_dataframe: pd.DataFrame = get_merges_performed(elastic_search, user_login)
     merge_requests_dataframe: pd.DataFrame = get_merge_requests(elastic_search, user_login)
@@ -113,12 +132,13 @@ def analyse_user(elastic_search: Elasticsearch, user_login: str):
                                                       requests_merged_dataframe], axis=1)
     consolidated_dataframe = consolidated_dataframe.fillna(0)
 
-    plt.rcParams['figure.figsize'] = (10, 5)
-    plt.style.use('fivethirtyeight')
-    ax = consolidated_dataframe.plot(linewidth=2, fontsize=12, title="User %s" % user_login)
-    ax.set_xlabel('Date')
-    ax.legend(fontsize=12)
-    plt.show()
+    if MERGES_PERFORMED_COLUMN in consolidated_dataframe and MERGES_SUCCESSFUL_COLUMN in consolidated_dataframe:
+        correlation: float = consolidated_dataframe[MERGES_PERFORMED_COLUMN].corr(
+            consolidated_dataframe[MERGES_SUCCESSFUL_COLUMN])
+        print(user_login, "Correlation: Merges done and succesful PRs ", correlation)
+        # plot_offered_vs_given(consolidated_dataframe, user_login)
+
+    plot_dataframe(consolidated_dataframe, user_login)
 
 
 def main():
