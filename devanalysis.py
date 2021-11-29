@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Any
+from typing import List, Any, Tuple
 
 import elasticsearch
 import matplotlib.pyplot as plt
@@ -7,7 +7,8 @@ import numpy as np
 import pandas as pd
 from elasticsearch import Elasticsearch
 from sklearn.linear_model import LinearRegression
-from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.api import VAR
+from statsmodels.tsa.stattools import adfuller, grangercausalitytests
 
 from config import ELASTICSEARCH_HOST
 from dataloading import PULL_REQUEST_INDEX
@@ -129,6 +130,38 @@ def plot_offered_vs_given(consolidated_dataframe: pd.DataFrame, user_login: str)
     plt.show()
 
 
+def check_causality(consolidated_dataframe: pd.DataFrame, user_login: str, cause_data_column: str,
+                    effect_data_column: str,
+                    threshold: float = 0.05,
+                    max_lag: int = 6,
+                    test_name: str = "ssr_chi2test"):
+    granger_causality_results: dict[int, Tuple] = grangercausalitytests(
+        consolidated_dataframe[[effect_data_column, cause_data_column]],
+        maxlag=max_lag, verbose=False)
+
+    consolidated_results: List[Tuple[int, float, float]] = []
+    for lag, results in granger_causality_results.items():
+        test_results: dict[str, Tuple]
+        test_results, _ = results
+        values = test_results[test_name]
+
+        test_statistic: float = values[0]
+        p_value: float = values[1]
+        consolidated_results.append((lag, p_value, test_statistic))
+
+    min_results: Tuple[int, float, float] = min(consolidated_results, key=lambda lag_results: lag_results[1])
+    min_lag: int = min_results[0]
+    min_p_value: float = min_results[1]
+    min_test_statistic: float = min_results[2]
+
+    if min_p_value < threshold:
+        print("%s Rejecting NULL hypothesis! %s CAUSES %s (p-value=%f, test=%s statistic=%f, lag=%d)" % (
+            user_login, cause_data_column, effect_data_column, min_p_value, test_name, min_test_statistic, min_lag))
+    else:
+        print("%s: NULL hypothesis (%s DOES NOT cause %s) cannot be rejected" % (
+            user_login, cause_data_column, effect_data_column))
+
+
 def check_stationarity(consolidated_dataframe: pd.DataFrame, user_login: str, data_column: str,
                        threshold: float = 0.05):
     test_result: list[float] = adfuller(consolidated_dataframe[data_column])
@@ -144,14 +177,37 @@ def check_stationarity(consolidated_dataframe: pd.DataFrame, user_login: str, da
     return True
 
 
+def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, max_order: int = 6):
+    test_observations: int = 6
+    train_dataset: pd.DataFrame = consolidated_dataframe[:-test_observations]
+    test_dataset: pd.DataFrame = consolidated_dataframe[-test_observations:]
+    print("%s Train data: %d Test data: %d" % (user_login, len(train_dataset), len(test_dataset)))
+
+    candidate_results: List[Tuple[int, float, float]] = []
+    for candidate_order in range(1, max_order):
+        var_model: VAR = VAR(train_dataset)
+        training_result = var_model.fit(candidate_order)
+        candidate_result: Tuple[int, float, float] = (candidate_order, training_result.aic, training_result.bic)
+        # print("VAR order %d, AIC: %f BIC %f" % candidate_result)
+        candidate_results.append(candidate_result)
+
+    selected_order: Tuple[int, float, float] = min(candidate_results, key=lambda result: result[1])
+    print("%s order for VAR model: %d" % (user_login, selected_order[0]))
+
+    var_model: VAR = VAR(train_dataset)
+    training_result = var_model.fit(selected_order[0])
+    print(training_result.summary())
+
+
 def analyse_user(es: Elasticsearch, user_login: str):
     merges_performed_dataframe: pd.DataFrame = get_merges_performed(es, user_login)
-    merge_requests_dataframe: pd.DataFrame = get_merge_requests(es, user_login)
+    # merge_requests_dataframe: pd.DataFrame = get_merge_requests(es, user_login)
     requests_merged_dataframe: pd.DataFrame = get_requests_merged(es, user_login)
 
-    consolidated_dataframe: pd.DataFrame = pd.concat([merges_performed_dataframe, merge_requests_dataframe,
+    consolidated_dataframe: pd.DataFrame = pd.concat([merges_performed_dataframe,
                                                       requests_merged_dataframe], axis=1)
     consolidated_dataframe = consolidated_dataframe.fillna(0)
+    consolidated_dataframe = consolidated_dataframe.rename_axis('metric', axis=1)
     print("Data points for user %s: %d" % (user_login, len(consolidated_dataframe)))
     consolidated_dataframe = consolidated_dataframe.diff()
     consolidated_dataframe = consolidated_dataframe.dropna()
@@ -164,6 +220,10 @@ def analyse_user(es: Elasticsearch, user_login: str):
         plot_offered_vs_given(consolidated_dataframe, user_login)
         check_stationarity(consolidated_dataframe, user_login, MERGES_SUCCESSFUL_COLUMN)
         check_stationarity(consolidated_dataframe, user_login, MERGES_PERFORMED_COLUMN)
+        check_causality(consolidated_dataframe, user_login, cause_data_column=MERGES_PERFORMED_COLUMN,
+                        effect_data_column=MERGES_SUCCESSFUL_COLUMN)
+
+        train_var_model(consolidated_dataframe, user_login)
 
     plot_dataframe(consolidated_dataframe, user_login)
 
