@@ -9,6 +9,7 @@ from elasticsearch import Elasticsearch
 from sklearn.linear_model import LinearRegression
 from statsmodels.tsa.api import VAR
 from statsmodels.tsa.stattools import adfuller, grangercausalitytests
+from statsmodels.tsa.vector_ar.var_model import VARResults
 
 from config import ELASTICSEARCH_HOST
 from dataloading import PULL_REQUEST_INDEX
@@ -105,11 +106,9 @@ def get_requests_merged(es: Elasticsearch, user_login: str,
 
 
 def plot_dataframe(consolidated_dataframe: pd.DataFrame, user_login: str):
-    plt.rcParams['figure.figsize'] = (10, 5)
+    plt.rcParams['figure.figsize'] = (20, 10)
     plt.style.use('fivethirtyeight')
-    ax = consolidated_dataframe.plot(linewidth=2, fontsize=12, title="User %s" % user_login)
-    ax.set_xlabel('Date')
-    ax.legend(fontsize=12)
+    _ = consolidated_dataframe.plot(subplots=True, linewidth=2, fontsize=12, title="User %s" % user_login)
     plt.show()
 
 
@@ -134,7 +133,7 @@ def check_causality(consolidated_dataframe: pd.DataFrame, user_login: str, cause
                     effect_data_column: str,
                     threshold: float = 0.05,
                     max_lag: int = 6,
-                    test_name: str = "ssr_chi2test"):
+                    test_name: str = "ssr_chi2test") -> bool:
     granger_causality_results: dict[int, Tuple] = grangercausalitytests(
         consolidated_dataframe[[effect_data_column, cause_data_column]],
         maxlag=max_lag, verbose=False)
@@ -155,15 +154,17 @@ def check_causality(consolidated_dataframe: pd.DataFrame, user_login: str, cause
     min_test_statistic: float = min_results[2]
 
     if min_p_value < threshold:
-        print("%s Rejecting NULL hypothesis! %s CAUSES %s (p-value=%f, test=%s statistic=%f, lag=%d)" % (
+        print("%s Rejecting NULL hypothesis! %s Granger CAUSES %s (p-value=%f, test=%s statistic=%f, lag=%d)" % (
             user_login, cause_data_column, effect_data_column, min_p_value, test_name, min_test_statistic, min_lag))
-    else:
-        print("%s: NULL hypothesis (%s DOES NOT cause %s) cannot be rejected" % (
-            user_login, cause_data_column, effect_data_column))
+        return True
+
+    print("%s: NULL hypothesis (%s DOES NOT Granger cause %s) cannot be rejected" % (
+        user_login, cause_data_column, effect_data_column))
+    return False
 
 
 def check_stationarity(consolidated_dataframe: pd.DataFrame, user_login: str, data_column: str,
-                       threshold: float = 0.05):
+                       threshold: float = 0.05) -> bool:
     test_result: list[float] = adfuller(consolidated_dataframe[data_column])
     adf_statistic: float = test_result[0]
     p_value: float = test_result[1]
@@ -177,7 +178,8 @@ def check_stationarity(consolidated_dataframe: pd.DataFrame, user_login: str, da
     return True
 
 
-def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, max_order: int = 6):
+def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, max_order: int = 6,
+                    information_criterion='aic'):
     test_observations: int = 6
     train_dataset: pd.DataFrame = consolidated_dataframe[:-test_observations]
     test_dataset: pd.DataFrame = consolidated_dataframe[-test_observations:]
@@ -188,15 +190,17 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, max_o
         var_model: VAR = VAR(train_dataset)
         training_result = var_model.fit(candidate_order)
         candidate_result: Tuple[int, float, float] = (candidate_order, training_result.aic, training_result.bic)
-        # print("VAR order %d, AIC: %f BIC %f" % candidate_result)
         candidate_results.append(candidate_result)
 
     selected_order: Tuple[int, float, float] = min(candidate_results, key=lambda result: result[1])
     print("%s order for VAR model: %d" % (user_login, selected_order[0]))
 
     var_model: VAR = VAR(train_dataset)
-    training_result = var_model.fit(selected_order[0])
+    training_result: VARResults = var_model.fit(maxlags=selected_order[0], ic=information_criterion)
     print(training_result.summary())
+
+    impulse_response = training_result.irf(periods=12)
+    impulse_response.plot(orth=False)
 
 
 def analyse_user(es: Elasticsearch, user_login: str):
@@ -214,18 +218,27 @@ def analyse_user(es: Elasticsearch, user_login: str):
     print("Applying 1st order differencing to the data")
 
     if MERGES_PERFORMED_COLUMN in consolidated_dataframe and MERGES_SUCCESSFUL_COLUMN in consolidated_dataframe:
-        correlation: float = consolidated_dataframe[MERGES_PERFORMED_COLUMN].corr(
-            consolidated_dataframe[MERGES_SUCCESSFUL_COLUMN])
-        print(user_login, "Correlation: Merges done and successful PRs ", correlation)
-        plot_offered_vs_given(consolidated_dataframe, user_login)
-        check_stationarity(consolidated_dataframe, user_login, MERGES_SUCCESSFUL_COLUMN)
-        check_stationarity(consolidated_dataframe, user_login, MERGES_PERFORMED_COLUMN)
-        check_causality(consolidated_dataframe, user_login, cause_data_column=MERGES_PERFORMED_COLUMN,
-                        effect_data_column=MERGES_SUCCESSFUL_COLUMN)
 
-        train_var_model(consolidated_dataframe, user_login)
+        merges_successful_stationary: bool = check_stationarity(consolidated_dataframe, user_login,
+                                                                MERGES_SUCCESSFUL_COLUMN)
+        merges_performed_stationary: bool = check_stationarity(consolidated_dataframe, user_login,
+                                                               MERGES_PERFORMED_COLUMN)
+        if merges_successful_stationary and merges_performed_stationary:
+            merges_cause_success: bool = check_causality(consolidated_dataframe, user_login,
+                                                         cause_data_column=MERGES_PERFORMED_COLUMN,
+                                                         effect_data_column=MERGES_SUCCESSFUL_COLUMN)
 
-    plot_dataframe(consolidated_dataframe, user_login)
+            _: bool = check_causality(consolidated_dataframe, user_login,
+                                      cause_data_column=MERGES_SUCCESSFUL_COLUMN,
+                                      effect_data_column=MERGES_PERFORMED_COLUMN)
+
+            if merges_cause_success:
+                correlation: float = consolidated_dataframe[MERGES_PERFORMED_COLUMN].corr(
+                    consolidated_dataframe[MERGES_SUCCESSFUL_COLUMN])
+                print(user_login, "Correlation: Merges done and successful PRs ", correlation)
+                plot_offered_vs_given(consolidated_dataframe, user_login)
+                train_var_model(consolidated_dataframe, user_login)
+                plot_dataframe(consolidated_dataframe, user_login)
 
 
 def main():
