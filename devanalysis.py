@@ -1,21 +1,28 @@
+import itertools
 from datetime import datetime
 from typing import List, Any, Tuple
 
 import elasticsearch
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 from elasticsearch import Elasticsearch
-from sklearn.linear_model import LinearRegression
+from matplotlib.figure import Figure
+from statsmodels.stats.stattools import durbin_watson
 from statsmodels.tsa.api import VAR
-from statsmodels.tsa.stattools import adfuller, grangercausalitytests
-from statsmodels.tsa.vector_ar.var_model import VARResults
+from statsmodels.tsa.seasonal import seasonal_decompose, DecomposeResult
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.vector_ar.hypothesis_test_results import CausalityTestResults
+from statsmodels.tsa.vector_ar.irf import IRAnalysis
+from statsmodels.tsa.vector_ar.var_model import VARResults, LagOrderResults
 
 from config import ELASTICSEARCH_HOST
 from dataloading import PULL_REQUEST_INDEX
 
 MERGES_PERFORMED_COLUMN: str = "merges_performed"
 MERGES_SUCCESSFUL_COLUMN: str = "requests_merged"
+MERGES_REQUESTED_COLUMN: str = "merge_requests"
+
+VARIABLES: Tuple[str, str, str] = (MERGES_PERFORMED_COLUMN, MERGES_SUCCESSFUL_COLUMN)
 
 
 def do_query_with_aggregation(elastic_search: Elasticsearch, aggregation_name: str, query: dict[str, Any],
@@ -63,9 +70,7 @@ def get_merges_performed(es: Elasticsearch, user_login: str,
 
 def get_merge_requests(elastic_search: Elasticsearch, user_login: str,
                        calendar_interval: str = "month") -> pd.DataFrame:
-    aggregation_name: str = "merge_requests"
-
-    result_dataframe: pd.DataFrame = do_query_with_aggregation(elastic_search, aggregation_name, query={
+    result_dataframe: pd.DataFrame = do_query_with_aggregation(elastic_search, MERGES_REQUESTED_COLUMN, query={
         "bool": {
             "must": {
                 "match": {"user.login": user_login}
@@ -105,62 +110,12 @@ def get_requests_merged(es: Elasticsearch, user_login: str,
     return result_dataframe
 
 
-def plot_dataframe(consolidated_dataframe: pd.DataFrame, user_login: str):
+def plot_dataframe(consolidated_dataframe: pd.DataFrame, plot_title: str) -> None:
     plt.rcParams['figure.figsize'] = (20, 10)
     plt.style.use('fivethirtyeight')
-    _ = consolidated_dataframe.plot(subplots=True, linewidth=2, fontsize=12, title="User %s" % user_login)
+    _ = consolidated_dataframe.plot(subplots=True, linewidth=2, fontsize=12, title=plot_title)
+    plt.savefig(plot_title + ".png")
     plt.show()
-
-
-def plot_offered_vs_given(consolidated_dataframe: pd.DataFrame, user_login: str):
-    plt.figure(figsize=(12, 6))
-    merges_performed: np.ndarray = consolidated_dataframe[MERGES_PERFORMED_COLUMN].values.reshape(-1, 1)
-    merges_successful: np.ndarray = consolidated_dataframe[MERGES_SUCCESSFUL_COLUMN].values.reshape(-1, 1)
-    linear_regression: LinearRegression = LinearRegression()
-    linear_regression.fit(merges_performed, merges_successful)
-    predicted_merges_successful: np.ndarray = linear_regression.predict(merges_performed)
-
-    plt.scatter(merges_performed, merges_successful)
-    plt.plot(merges_performed, predicted_merges_successful, color="red")
-
-    plt.xlabel("Performed")
-    plt.ylabel("Successful")
-    plt.title("User %s" % user_login)
-    plt.show()
-
-
-def check_causality(consolidated_dataframe: pd.DataFrame, user_login: str, cause_data_column: str,
-                    effect_data_column: str,
-                    threshold: float = 0.05,
-                    max_lag: int = 6,
-                    test_name: str = "ssr_chi2test") -> bool:
-    granger_causality_results: dict[int, Tuple] = grangercausalitytests(
-        consolidated_dataframe[[effect_data_column, cause_data_column]],
-        maxlag=max_lag, verbose=False)
-
-    consolidated_results: List[Tuple[int, float, float]] = []
-    for lag, results in granger_causality_results.items():
-        test_results: dict[str, Tuple]
-        test_results, _ = results
-        values = test_results[test_name]
-
-        test_statistic: float = values[0]
-        p_value: float = values[1]
-        consolidated_results.append((lag, p_value, test_statistic))
-
-    min_results: Tuple[int, float, float] = min(consolidated_results, key=lambda lag_results: lag_results[1])
-    min_lag: int = min_results[0]
-    min_p_value: float = min_results[1]
-    min_test_statistic: float = min_results[2]
-
-    if min_p_value < threshold:
-        print("%s Rejecting NULL hypothesis! %s Granger CAUSES %s (p-value=%f, test=%s statistic=%f, lag=%d)" % (
-            user_login, cause_data_column, effect_data_column, min_p_value, test_name, min_test_statistic, min_lag))
-        return True
-
-    print("%s: NULL hypothesis (%s DOES NOT Granger cause %s) cannot be rejected" % (
-        user_login, cause_data_column, effect_data_column))
-    return False
 
 
 def check_stationarity(consolidated_dataframe: pd.DataFrame, user_login: str, data_column: str,
@@ -178,67 +133,98 @@ def check_stationarity(consolidated_dataframe: pd.DataFrame, user_login: str, da
     return True
 
 
-def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, max_order: int = 6,
-                    information_criterion='aic'):
+def check_residual_correlation(residuals, min_threshold=1.5, max_threshold=2.5):
+    statistics: list[float] = durbin_watson(residuals)
+
+    for statistic in statistics:
+        if statistic < min_threshold or statistic > max_threshold:
+            print("There might be a correlation here . Statistic: %f" % statistic)
+            return False
+
+    print("No significant serial correlation. Result: " + str(statistics))
+    return True
+
+
+def check_causality(training_result: VARResults, causality_threshold=0.05
+                    ):
+    for cause_data_column in VARIABLES:
+        for effect_data_column in VARIABLES:
+            if cause_data_column != effect_data_column:
+                causality_results: CausalityTestResults = training_result.test_causality(causing=cause_data_column,
+                                                                                         caused=effect_data_column,
+                                                                                         kind='wald',
+                                                                                         signif=causality_threshold)
+                print(causality_results.summary())
+
+
+def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, max_order: int = 12,
+                    information_criterion='aic',
+                    periods=24):
     test_observations: int = 6
     train_dataset: pd.DataFrame = consolidated_dataframe[:-test_observations]
     test_dataset: pd.DataFrame = consolidated_dataframe[-test_observations:]
     print("%s Train data: %d Test data: %d" % (user_login, len(train_dataset), len(test_dataset)))
 
-    candidate_results: List[Tuple[int, float, float]] = []
-    for candidate_order in range(1, max_order):
-        var_model: VAR = VAR(train_dataset)
-        training_result = var_model.fit(candidate_order)
-        candidate_result: Tuple[int, float, float] = (candidate_order, training_result.aic, training_result.bic)
-        candidate_results.append(candidate_result)
-
-    selected_order: Tuple[int, float, float] = min(candidate_results, key=lambda result: result[1])
-    print("%s order for VAR model: %d" % (user_login, selected_order[0]))
-
     var_model: VAR = VAR(train_dataset)
-    training_result: VARResults = var_model.fit(maxlags=selected_order[0], ic=information_criterion)
-    print(training_result.summary())
+    order_results: LagOrderResults = var_model.select_order(maxlags=max_order)
+    print(order_results.summary())
 
-    impulse_response = training_result.irf(periods=12)
-    impulse_response.plot(orth=False)
+    for permutation_index, permutation in enumerate(itertools.permutations(VARIABLES)):
+        print("Permutation %d : %s" % (permutation_index, str(permutation)))
+        train_dataset: pd.DataFrame = train_dataset[list(permutation)]
+
+        training_result: VARResults = var_model.fit(maxlags=max_order, ic=information_criterion)
+        print(training_result.summary())
+
+        check_causality(training_result)
+
+        if not check_residual_correlation(training_result.resid):
+            print("ALERT! Serial correlation found in the residuals")
+        impulse_response: IRAnalysis = training_result.irf(periods=periods)
+        impulse_response.plot(figsize=(15, 15))
+        plt.savefig("%d_impulse_response_%s.png" % (permutation_index, user_login))
+
+        variance_decomposition = training_result.fevd(periods=periods)
+        variance_decomposition.plot(figsize=(15, 15))
+        plt.savefig("%d_variance_decomposition_%s.png" % (permutation_index, user_login))
+
+
+def plot_seasonal_decomposition(consolidated_dataframe: pd.DataFrame, user_login: str,
+                                column: str = MERGES_PERFORMED_COLUMN) -> None:
+    merges_performed_decomposition: DecomposeResult = seasonal_decompose(
+        consolidated_dataframe[column],
+        model='additive')
+
+    _: Figure = merges_performed_decomposition.plot()
+    plt.savefig("seasonal_decomposition_%s_%s.png" % (column, user_login))
 
 
 def analyse_user(es: Elasticsearch, user_login: str):
     merges_performed_dataframe: pd.DataFrame = get_merges_performed(es, user_login)
-    # merge_requests_dataframe: pd.DataFrame = get_merge_requests(es, user_login)
+    merge_requests_dataframe: pd.DataFrame = get_merge_requests(es, user_login)
     requests_merged_dataframe: pd.DataFrame = get_requests_merged(es, user_login)
 
     consolidated_dataframe: pd.DataFrame = pd.concat([merges_performed_dataframe,
+                                                      merge_requests_dataframe,
                                                       requests_merged_dataframe], axis=1)
     consolidated_dataframe = consolidated_dataframe.fillna(0)
     consolidated_dataframe = consolidated_dataframe.rename_axis('metric', axis=1)
     print("Data points for user %s: %d" % (user_login, len(consolidated_dataframe)))
-    consolidated_dataframe = consolidated_dataframe.diff()
-    consolidated_dataframe = consolidated_dataframe.dropna()
+    plot_dataframe(consolidated_dataframe, "%s: before differencing" % user_login)
+
+    after_differencing_data = consolidated_dataframe.diff()
+    after_differencing_data = after_differencing_data.dropna()
     print("Applying 1st order differencing to the data")
 
-    if MERGES_PERFORMED_COLUMN in consolidated_dataframe and MERGES_SUCCESSFUL_COLUMN in consolidated_dataframe:
+    for variable in VARIABLES:
+        is_stationary: bool = check_stationarity(after_differencing_data, user_login, variable)
+        if not is_stationary:
+            print("ALERT! %s is not stationary" % variable)
+            return
 
-        merges_successful_stationary: bool = check_stationarity(consolidated_dataframe, user_login,
-                                                                MERGES_SUCCESSFUL_COLUMN)
-        merges_performed_stationary: bool = check_stationarity(consolidated_dataframe, user_login,
-                                                               MERGES_PERFORMED_COLUMN)
-        if merges_successful_stationary and merges_performed_stationary:
-            merges_cause_success: bool = check_causality(consolidated_dataframe, user_login,
-                                                         cause_data_column=MERGES_PERFORMED_COLUMN,
-                                                         effect_data_column=MERGES_SUCCESSFUL_COLUMN)
-
-            _: bool = check_causality(consolidated_dataframe, user_login,
-                                      cause_data_column=MERGES_SUCCESSFUL_COLUMN,
-                                      effect_data_column=MERGES_PERFORMED_COLUMN)
-
-            if merges_cause_success:
-                correlation: float = consolidated_dataframe[MERGES_PERFORMED_COLUMN].corr(
-                    consolidated_dataframe[MERGES_SUCCESSFUL_COLUMN])
-                print(user_login, "Correlation: Merges done and successful PRs ", correlation)
-                plot_offered_vs_given(consolidated_dataframe, user_login)
-                train_var_model(consolidated_dataframe, user_login)
-                plot_dataframe(consolidated_dataframe, user_login)
+    plot_seasonal_decomposition(consolidated_dataframe, user_login)
+    train_var_model(after_differencing_data[list(VARIABLES)], user_login)
+    plot_dataframe(after_differencing_data, "%s: after differencing" % user_login)
 
 
 def main():
@@ -260,8 +246,13 @@ def main():
                                                 })
     mergers: List[str] = [merger_data['key'] for merger_data in
                           search_results['aggregations'][aggregation_name]['buckets']]
-    for user_login in mergers:
-        analyse_user(es, user_login)
+    print("mergers", mergers)
+    analyse_user(es, "roblourens")
+    # for user_login in mergers:
+    #     try:
+    #         analyse_user(es, user_login)
+    #     except ValueError:
+    #         print("Error! Cannot analyse user %s" % user_login)
 
 
 if __name__ == "__main__":
