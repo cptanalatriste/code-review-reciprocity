@@ -4,16 +4,15 @@ from typing import List, Any
 import pandas as pd
 from elasticsearch import Elasticsearch
 
-from dataloading import PULL_REQUEST_INDEX
-
 MERGES_PERFORMED_COLUMN: str = "merges_performed"
 MERGES_SUCCESSFUL_COLUMN: str = "requests_merged"
 MERGES_REQUESTED_COLUMN: str = "merge_requests"
 
 
-def do_query_with_aggregation(elastic_search: Elasticsearch, aggregation_name: str, query: dict[str, Any],
+def do_query_with_aggregation(elastic_search: Elasticsearch, pull_request_index: str, aggregation_name: str,
+                              query: dict[str, Any],
                               date_histogram: dict[str, Any]) -> pd.DataFrame:
-    search_results: dict[str, dict] = elastic_search.search(index=PULL_REQUEST_INDEX,
+    search_results: dict[str, dict] = elastic_search.search(index=pull_request_index,
                                                             size=0,
                                                             query=query,
                                                             aggs={
@@ -35,9 +34,10 @@ def do_query_with_aggregation(elastic_search: Elasticsearch, aggregation_name: s
     return result_dataframe
 
 
-def get_merges_performed(es: Elasticsearch, user_login: str,
+def get_merges_performed(es: Elasticsearch, pull_request_index: str, user_login: str,
+
                          calendar_interval: str = "month") -> pd.DataFrame:
-    result_dataframe: pd.DataFrame = do_query_with_aggregation(es, MERGES_PERFORMED_COLUMN, query={
+    result_dataframe: pd.DataFrame = do_query_with_aggregation(es, pull_request_index, MERGES_PERFORMED_COLUMN, query={
         "bool": {
             "must": {
                 "match": {"merged_by.login": user_login}
@@ -54,28 +54,29 @@ def get_merges_performed(es: Elasticsearch, user_login: str,
     return result_dataframe
 
 
-def get_merge_requests(elastic_search: Elasticsearch, user_login: str,
+def get_merge_requests(elastic_search: Elasticsearch, pull_request_index: str, user_login: str,
                        calendar_interval: str = "month") -> pd.DataFrame:
-    result_dataframe: pd.DataFrame = do_query_with_aggregation(elastic_search, MERGES_REQUESTED_COLUMN, query={
-        "bool": {
-            "must": {
-                "match": {"user.login": user_login}
-            },
-            "must_not": {
-                "match": {"merged_by.login": user_login}
+    result_dataframe: pd.DataFrame = do_query_with_aggregation(elastic_search, pull_request_index,
+                                                               MERGES_REQUESTED_COLUMN, query={
+            "bool": {
+                "must": {
+                    "match": {"user.login": user_login}
+                },
+                "must_not": {
+                    "match": {"merged_by.login": user_login}
+                }
             }
-        }
-    }, date_histogram={
-        "field": "created_at",
-        "calendar_interval": calendar_interval
-    })
+        }, date_histogram={
+            "field": "created_at",
+            "calendar_interval": calendar_interval
+        })
 
     return result_dataframe
 
 
-def get_requests_merged(es: Elasticsearch, user_login: str,
+def get_requests_merged(es: Elasticsearch, pull_request_index: str, user_login: str,
                         calendar_interval: str = "month"):
-    result_dataframe: pd.DataFrame = do_query_with_aggregation(es, MERGES_SUCCESSFUL_COLUMN, query={
+    result_dataframe: pd.DataFrame = do_query_with_aggregation(es, pull_request_index, MERGES_SUCCESSFUL_COLUMN, query={
         "bool": {
             "must": [
                 {
@@ -96,14 +97,14 @@ def get_requests_merged(es: Elasticsearch, user_login: str,
     return result_dataframe
 
 
-def get_all_mergers(es: Elasticsearch) -> List[str]:
+def get_all_mergers(es: Elasticsearch, pull_request_index: str, ) -> List[str]:
     aggregation_name: str = "frequent_mergers"
 
-    es.indices.refresh(index=PULL_REQUEST_INDEX)
-    document_count: List[dict] = es.cat.count(index=PULL_REQUEST_INDEX, params={"format": "json"})
-    print("Documents on index %s: %s" % (PULL_REQUEST_INDEX, document_count[0]['count']))
+    es.indices.refresh(index=pull_request_index)
+    document_count: List[dict] = es.cat.count(index=pull_request_index, params={"format": "json"})
+    print("Documents on index %s: %s" % (pull_request_index, document_count[0]['count']))
 
-    search_results: dict[str, dict] = es.search(index=PULL_REQUEST_INDEX,
+    search_results: dict[str, dict] = es.search(index=pull_request_index,
                                                 size=0,
                                                 aggs={
                                                     aggregation_name: {

@@ -134,13 +134,13 @@ def plot_seasonal_decomposition(consolidated_dataframe: pd.DataFrame, user_login
         model='additive')
 
     _: Figure = merges_performed_decomposition.plot()
-    plt.savefig(IMAGE_DIRECTORY + "seasonal_decomposition_%s_%s.png" % (column, user_login))
+    plt.savefig(IMAGE_DIRECTORY + "%s_seasonal_decomposition_%s.png" % (user_login, column))
 
 
-def analyse_user(es: Elasticsearch, user_login: str) -> dict[str, Any]:
-    merges_performed_dataframe: pd.DataFrame = get_merges_performed(es, user_login)
-    merge_requests_dataframe: pd.DataFrame = get_merge_requests(es, user_login)
-    requests_merged_dataframe: pd.DataFrame = get_requests_merged(es, user_login)
+def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str) -> dict[str, Any]:
+    merges_performed_dataframe: pd.DataFrame = get_merges_performed(es, pull_request_index, user_login)
+    merge_requests_dataframe: pd.DataFrame = get_merge_requests(es, pull_request_index, user_login)
+    requests_merged_dataframe: pd.DataFrame = get_requests_merged(es, pull_request_index, user_login)
 
     consolidated_dataframe: pd.DataFrame = pd.concat([merges_performed_dataframe,
                                                       merge_requests_dataframe,
@@ -183,16 +183,18 @@ def analyse_user(es: Elasticsearch, user_login: str) -> dict[str, Any]:
 
 def main():
     es: Elasticsearch = elasticsearch.Elasticsearch(ELASTICSEARCH_HOST)
-    all_mergers: list[str] = get_all_mergers(es)
+    pull_request_index: str = "pull-requests-v2"
+
+    all_mergers: list[str] = get_all_mergers(es, pull_request_index)
     merger_data: list[dict[str, Any]] = []
     for merger in all_mergers:
         try:
-            merger_data.append(analyse_user(es, merger))
+            merger_data.append(analyse_user(es, pull_request_index, merger))
         except ValueError:
             logging.error("Cannot analyse user %s" % merger)
 
     consolidated_analysis: pd.DataFrame = pd.DataFrame(merger_data)
-    consolidated_analysis.to_csv("consolidated_analysis.csv")
+    consolidated_analysis.to_csv(pull_request_index + "_consolidated_analysis.csv")
 
 
 if __name__ == "__main__":
