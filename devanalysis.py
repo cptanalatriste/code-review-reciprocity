@@ -1,6 +1,7 @@
 import itertools
 import logging
-from typing import Tuple, Any
+import traceback
+from typing import Tuple, Any, Optional
 
 import elasticsearch
 import matplotlib.pyplot as plt
@@ -137,19 +138,33 @@ def plot_seasonal_decomposition(consolidated_dataframe: pd.DataFrame, user_login
     plt.savefig(IMAGE_DIRECTORY + "%s_seasonal_decomposition_%s.png" % (user_login, column))
 
 
-def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str) -> dict[str, Any]:
+def consolidate_dataframe(es: Elasticsearch, pull_request_index: str, user_login: str) -> pd.DataFrame:
     merges_performed_dataframe: pd.DataFrame = get_merges_performed(es, pull_request_index, user_login)
+    if not len(merges_performed_dataframe):
+        logging.error("User %s does not merge PRs for other developers" % user_login)
+        return pd.DataFrame()
+
     merge_requests_dataframe: pd.DataFrame = get_merge_requests(es, pull_request_index, user_login)
+
     requests_merged_dataframe: pd.DataFrame = get_requests_merged(es, pull_request_index, user_login)
+    if not len(requests_merged_dataframe):
+        logging.error("User %s does not have PRs merged by other developers" % user_login)
+        return pd.DataFrame()
 
     consolidated_dataframe: pd.DataFrame = pd.concat([merges_performed_dataframe,
                                                       merge_requests_dataframe,
                                                       requests_merged_dataframe], axis=1)
     consolidated_dataframe = consolidated_dataframe.fillna(0)
     consolidated_dataframe = consolidated_dataframe.rename_axis('metric', axis=1)
+    return consolidated_dataframe
+
+
+def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str) -> Optional[dict[str, Any]]:
+    consolidated_dataframe = consolidate_dataframe(es, pull_request_index, user_login)
     data_points: int = len(consolidated_dataframe)
     if not len(consolidated_dataframe):
         print("No data points for user %s" % user_login)
+        return None
 
     print("Data points for user %s: %d" % (user_login, data_points))
     plot_dataframe(consolidated_dataframe, "%s: before differencing" % user_login)
@@ -181,16 +196,16 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str) ->
     return analysis_result
 
 
-def main():
+def main(pull_request_index: str):
     es: Elasticsearch = elasticsearch.Elasticsearch(ELASTICSEARCH_HOST)
-    pull_request_index: str = "pull-requests-v2"
 
     all_mergers: list[str] = get_all_mergers(es, pull_request_index)
     merger_data: list[dict[str, Any]] = []
     for merger in all_mergers:
         try:
             merger_data.append(analyse_user(es, pull_request_index, merger))
-        except ValueError:
+        except Exception:
+            logging.error(traceback.format_exc())
             logging.error("Cannot analyse user %s" % merger)
 
     consolidated_analysis: pd.DataFrame = pd.DataFrame(merger_data)
@@ -198,4 +213,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main("google-guava")
