@@ -8,11 +8,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from elasticsearch import Elasticsearch
 from matplotlib.figure import Figure
-from statsmodels.stats.stattools import durbin_watson
 from statsmodels.tsa.api import VAR
 from statsmodels.tsa.seasonal import seasonal_decompose, DecomposeResult
 from statsmodels.tsa.stattools import adfuller
-from statsmodels.tsa.vector_ar.hypothesis_test_results import CausalityTestResults
+from statsmodels.tsa.vector_ar.hypothesis_test_results import CausalityTestResults, WhitenessTestResults
 from statsmodels.tsa.vector_ar.irf import IRAnalysis
 from statsmodels.tsa.vector_ar.var_model import VARResults, LagOrderResults
 
@@ -47,18 +46,6 @@ def check_stationarity(consolidated_dataframe: pd.DataFrame, user_login: str, da
     return True
 
 
-def check_residual_correlation(residuals, min_threshold=1.5, max_threshold=2.5):
-    statistics: list[float] = durbin_watson(residuals)
-
-    for statistic in statistics:
-        if statistic < min_threshold or statistic > max_threshold:
-            logging.error("There might be a correlation here . Statistic: %f" % statistic)
-            return False
-
-    print("No significant serial correlation. Result: " + str(statistics))
-    return True
-
-
 def check_causality(training_result: VARResults, causality_threshold=0.05) -> dict[str, bool]:
     test_results: dict[str, Any] = {}
     for cause_data_column in VARIABLES:
@@ -88,7 +75,8 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, max_o
     print(order_results.summary())
 
     result_analysis: dict[str, Any] = {
-        "var_order": set()
+        "var_order": set(),
+        "serial_correlation": set()
     }
 
     for permutation_index, permutation in enumerate(itertools.permutations(VARIABLES)):
@@ -98,16 +86,20 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, max_o
         training_result: VARResults = var_model.fit(maxlags=max_order, ic=information_criterion)
         print(training_result.summary())
 
-        if not check_residual_correlation(training_result.resid):
-            logging.error("ALERT! Serial correlation found in the residuals for user %s" % user_login)
-            return result_analysis
-
         var_order: int = training_result.k_ar
         result_analysis["var_order"].add(training_result.k_ar)
-
         if not var_order:
             logging.error("Model with 0 lags for user %s. Cannot test Granger Causality" % user_login)
             continue
+
+        whiteness_result: WhitenessTestResults = training_result.test_whiteness()
+        print(whiteness_result.summary())
+        if whiteness_result.conclusion == "reject":
+            logging.error("ALERT! Serial correlation found in the residuals for user %s" % user_login)
+            result_analysis["serial_correlation"].add(True)
+            return result_analysis
+
+        result_analysis["serial_correlation"].add(False)
 
         causality_results: dict[str, bool] = check_causality(training_result)
         for test, result in causality_results.items():
@@ -203,7 +195,9 @@ def start_analysis(pull_request_index: str):
     merger_data: list[dict[str, Any]] = []
     for merger in all_mergers:
         try:
-            merger_data.append(analyse_user(es, pull_request_index, merger))
+            user_analysis: dict[str, Any] = analyse_user(es, pull_request_index, merger)
+            if user_analysis:
+                merger_data.append(user_analysis)
         except Exception:
             logging.error(traceback.format_exc())
             logging.error("Cannot analyse user %s" % merger)
@@ -213,4 +207,4 @@ def start_analysis(pull_request_index: str):
 
 
 if __name__ == "__main__":
-    start_analysis("apache-spark")
+    start_analysis("eclipse-jetty.project")

@@ -8,9 +8,9 @@ from perceval.backends.core.github import GitHub, CATEGORY_PULL_REQUEST
 
 from config import GITHUB_API_TOKEN, ELASTICSEARCH_HOST
 
-OWNER: str = "apache"
-REPOSITORY: str = "spark"
-PULL_REQUEST_INDEX: str = OWNER + "-" + REPOSITORY
+OWNER: str = "microsoft"
+REPOSITORY: str = "TypeScript"
+PULL_REQUEST_INDEX: str = OWNER.lower() + "-" + REPOSITORY.lower()
 
 
 def create_index(elastic_search: Elasticsearch):
