@@ -196,7 +196,7 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str) ->
     return analysis_result
 
 
-def main(pull_request_index: str):
+def start_analysis(pull_request_index: str):
     es: Elasticsearch = elasticsearch.Elasticsearch(ELASTICSEARCH_HOST)
 
     all_mergers: list[str] = get_all_mergers(es, pull_request_index)
@@ -213,4 +213,4 @@ def main(pull_request_index: str):
 
 
 if __name__ == "__main__":
-    main("google-guava")
+    start_analysis("apache-spark")

@@ -57,19 +57,18 @@ def get_merges_performed(es: Elasticsearch, pull_request_index: str, user_login:
 def get_merge_requests(elastic_search: Elasticsearch, pull_request_index: str, user_login: str,
                        calendar_interval: str = "month") -> pd.DataFrame:
     result_dataframe: pd.DataFrame = do_query_with_aggregation(elastic_search, pull_request_index,
-                                                               MERGES_REQUESTED_COLUMN, query={
-            "bool": {
-                "must": {
-                    "match": {"user.login": user_login}
-                },
-                "must_not": {
-                    "match": {"merged_by.login": user_login}
-                }
-            }
-        }, date_histogram={
-            "field": "created_at",
-            "calendar_interval": calendar_interval
-        })
+                                                               MERGES_REQUESTED_COLUMN,
+                                                               query={"bool": {
+                                                                   "must": {
+                                                                       "match": {"user.login": user_login}
+                                                                   },
+                                                                   "must_not": {
+                                                                       "match": {"merged_by.login": user_login}
+                                                                   }
+                                                               }
+                                                               }, date_histogram={"field": "created_at",
+                                                                                  "calendar_interval": calendar_interval
+                                                                                  })
 
     return result_dataframe
 

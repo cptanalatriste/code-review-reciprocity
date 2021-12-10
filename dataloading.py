@@ -1,3 +1,5 @@
+import logging
+import traceback
 from datetime import datetime, timedelta
 
 import elasticsearch
@@ -6,8 +8,8 @@ from perceval.backends.core.github import GitHub, CATEGORY_PULL_REQUEST
 
 from config import GITHUB_API_TOKEN, ELASTICSEARCH_HOST
 
-OWNER: str = "google"
-REPOSITORY: str = "guava"
+OWNER: str = "apache"
+REPOSITORY: str = "spark"
 PULL_REQUEST_INDEX: str = OWNER + "-" + REPOSITORY
 
 
@@ -17,9 +19,11 @@ def create_index(elastic_search: Elasticsearch):
         elastic_search.indices.put_settings(index=PULL_REQUEST_INDEX, body={
             "index.mapping.total_fields.limit": 5000
         })
+        print("Index %s created" % PULL_REQUEST_INDEX)
         return True
-    except elasticsearch.exceptions.RequestError:
+    except Exception:
         print("Index already exists, remove before relaunching the script")
+        logging.error(traceback.format_exc())
         return False
 
 
@@ -27,8 +31,9 @@ def index_pull_request(elastic_search: Elasticsearch, pull_request_data: dict):
     pull_request_id: str = str(pull_request_data['number'])
     try:
         elastic_search.index(index=PULL_REQUEST_INDEX, id=pull_request_id, document=pull_request_data)
-    except elasticsearch.exceptions.RequestError:
+    except Exception:
         print("Could not store pull request %s " % pull_request_id)
+        logging.error(traceback.format_exc())
 
 
 def get_and_store(factor: int = 0, new_index: bool = True):
@@ -56,5 +61,6 @@ def get_and_store(factor: int = 0, new_index: bool = True):
 
 
 if __name__ == "__main__":
+    get_and_store(factor=0, new_index=True)
     for year_factor in range(1, 10):
         get_and_store(factor=year_factor, new_index=False)
