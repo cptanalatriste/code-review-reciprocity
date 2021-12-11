@@ -65,6 +65,7 @@ def check_causality(training_result: VARResults, causality_threshold=0.05) -> di
 
 
 def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str,
+                    project: str,
                     information_criterion='bic',
                     periods=24) -> dict[str, set]:
     test_observations: int = 6
@@ -112,23 +113,24 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str,
 
         impulse_response: IRAnalysis = training_result.irf(periods=periods)
         impulse_response.plot(figsize=(15, 15))
-        plt.savefig(IMAGE_DIRECTORY + "%s_impulse_response_%i.png" % (user_login, permutation_index))
+        plt.savefig(IMAGE_DIRECTORY + "%s_%s_impulse_response_%i.png" % (user_login, project, permutation_index))
 
         variance_decomposition = training_result.fevd(periods=periods)
         variance_decomposition.plot(figsize=(15, 15))
-        plt.savefig(IMAGE_DIRECTORY + "%s_variance_decomposition_%i.png" % (user_login, permutation_index))
+        plt.savefig(IMAGE_DIRECTORY + "%s_%s_variance_decomposition_%i.png" % (user_login, project, permutation_index))
 
     return result_analysis
 
 
 def plot_seasonal_decomposition(consolidated_dataframe: pd.DataFrame, user_login: str,
+                                project: str,
                                 column: str = MERGES_PERFORMED_COLUMN) -> None:
     merges_performed_decomposition: DecomposeResult = seasonal_decompose(
         consolidated_dataframe[column],
         model='additive')
 
     _: Figure = merges_performed_decomposition.plot()
-    plt.savefig(IMAGE_DIRECTORY + "%s_seasonal_decomposition_%s.png" % (user_login, column))
+    plt.savefig(IMAGE_DIRECTORY + "%s_%s_seasonal_decomposition_%s.png" % (user_login, project, column))
 
 
 def consolidate_dataframe(es: Elasticsearch, pull_request_index: str, user_login: str,
@@ -164,8 +166,8 @@ def consolidate_dataframe(es: Elasticsearch, pull_request_index: str, user_login
 
 
 def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, calendar_interval: str,
-                 information_criterion: str) -> Optional[
-    dict[str, Any]]:
+                 information_criterion: str,
+                 project: str) -> Optional[dict[str, Any]]:
     consolidated_dataframe = consolidate_dataframe(es, pull_request_index, user_login, calendar_interval)
     data_points: int = len(consolidated_dataframe)
     if not len(consolidated_dataframe):
@@ -193,12 +195,12 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, ca
             return analysis_result
 
     var_results: dict[str, Any] = train_var_model(after_differencing_data[list(VARIABLES)], user_login,
-                                                  information_criterion=information_criterion)
+                                                  project, information_criterion=information_criterion)
 
     try:
-        plot_dataframe(consolidated_dataframe, "%s: before differencing" % user_login)
-        plot_dataframe(after_differencing_data, "%s: after differencing" % user_login)
-        plot_seasonal_decomposition(consolidated_dataframe, user_login)
+        plot_dataframe(consolidated_dataframe, "%s_%s_before_differencing" % (user_login, project))
+        plot_dataframe(after_differencing_data, "%s_%s_after_differencing" % (user_login, project))
+        plot_seasonal_decomposition(consolidated_dataframe, user_login, project)
     except ValueError:
         logging.error(traceback.format_exc())
         logging.error("Error while building diagnosis plots for user %s" % user_login)
@@ -217,7 +219,7 @@ def start_analysis(pull_request_index: str, calendar_interval: str, information_
     for merger in all_mergers:
         try:
             user_analysis: dict[str, Any] = analyse_user(es, pull_request_index, merger, calendar_interval,
-                                                         information_criterion)
+                                                         information_criterion, pull_request_index)
             if user_analysis:
                 merger_data.append(user_analysis)
         except Exception:
@@ -231,4 +233,4 @@ def start_analysis(pull_request_index: str, calendar_interval: str, information_
 
 
 if __name__ == "__main__":
-    start_analysis("pull-requests-v2", "month", "aic")
+    start_analysis("google-googletest", "month", "aic")
