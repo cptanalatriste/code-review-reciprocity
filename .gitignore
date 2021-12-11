@@ -131,3 +131,5 @@ dmypy.json
 # Configuration files
 config.py
 /samples/
+/img/
+/csv/
