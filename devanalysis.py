@@ -130,15 +130,17 @@ def plot_seasonal_decomposition(consolidated_dataframe: pd.DataFrame, user_login
     plt.savefig(IMAGE_DIRECTORY + "%s_seasonal_decomposition_%s.png" % (user_login, column))
 
 
-def consolidate_dataframe(es: Elasticsearch, pull_request_index: str, user_login: str) -> pd.DataFrame:
-    merges_performed_dataframe: pd.DataFrame = get_merges_performed(es, pull_request_index, user_login)
+def consolidate_dataframe(es: Elasticsearch, pull_request_index: str, user_login: str,
+                          calendar_interval: str) -> pd.DataFrame:
+    merges_performed_dataframe: pd.DataFrame = get_merges_performed(es, pull_request_index, user_login,
+                                                                    calendar_interval)
     if not len(merges_performed_dataframe):
         logging.error("User %s does not merge PRs for other developers" % user_login)
         return pd.DataFrame()
 
-    merge_requests_dataframe: pd.DataFrame = get_merge_requests(es, pull_request_index, user_login)
+    merge_requests_dataframe: pd.DataFrame = get_merge_requests(es, pull_request_index, user_login, calendar_interval)
 
-    requests_merged_dataframe: pd.DataFrame = get_requests_merged(es, pull_request_index, user_login)
+    requests_merged_dataframe: pd.DataFrame = get_requests_merged(es, pull_request_index, user_login, calendar_interval)
     if not len(requests_merged_dataframe):
         logging.error("User %s does not have PRs merged by other developers" % user_login)
         return pd.DataFrame()
@@ -151,14 +153,16 @@ def consolidate_dataframe(es: Elasticsearch, pull_request_index: str, user_login
     return consolidated_dataframe
 
 
-def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str) -> Optional[dict[str, Any]]:
-    consolidated_dataframe = consolidate_dataframe(es, pull_request_index, user_login)
+def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, calendar_interval: str,
+                 information_criterion: str) -> Optional[
+    dict[str, Any]]:
+    consolidated_dataframe = consolidate_dataframe(es, pull_request_index, user_login, calendar_interval)
     data_points: int = len(consolidated_dataframe)
     if not len(consolidated_dataframe):
         print("No data points for user %s" % user_login)
         return None
 
-    print("Data points for user %s: %d" % (user_login, data_points))
+    print("Data points for user %s: %d. Calendar interval: %s" % (user_login, data_points, calendar_interval))
     plot_dataframe(consolidated_dataframe, "%s: before differencing" % user_login)
 
     analysis_result: dict[str, Any] = {
@@ -179,7 +183,8 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str) ->
             return analysis_result
 
     plot_seasonal_decomposition(consolidated_dataframe, user_login)
-    var_results: dict[str, Any] = train_var_model(after_differencing_data[list(VARIABLES)], user_login)
+    var_results: dict[str, Any] = train_var_model(after_differencing_data[list(VARIABLES)], user_login,
+                                                  information_criterion=information_criterion)
     plot_dataframe(after_differencing_data, "%s: after differencing" % user_login)
 
     for key, values in var_results.items():
@@ -188,14 +193,15 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str) ->
     return analysis_result
 
 
-def start_analysis(pull_request_index: str):
+def start_analysis(pull_request_index: str, calendar_interval: str, information_criterion: str):
     es: Elasticsearch = elasticsearch.Elasticsearch(ELASTICSEARCH_HOST)
 
     all_mergers: list[str] = get_all_mergers(es, pull_request_index)
     merger_data: list[dict[str, Any]] = []
     for merger in all_mergers:
         try:
-            user_analysis: dict[str, Any] = analyse_user(es, pull_request_index, merger)
+            user_analysis: dict[str, Any] = analyse_user(es, pull_request_index, merger, calendar_interval,
+                                                         information_criterion)
             if user_analysis:
                 merger_data.append(user_analysis)
         except Exception:
@@ -203,8 +209,10 @@ def start_analysis(pull_request_index: str):
             logging.error("Cannot analyse user %s" % merger)
 
     consolidated_analysis: pd.DataFrame = pd.DataFrame(merger_data)
-    consolidated_analysis.to_csv(pull_request_index + "_consolidated_analysis.csv")
+    csv_file: str = "%s_consolidated_analysis_%s.csv" % (pull_request_index, calendar_interval)
+    consolidated_analysis.to_csv(csv_file)
+    print("Results written in %s" % csv_file)
 
 
 if __name__ == "__main__":
-    start_analysis("eclipse-jetty.project")
+    start_analysis("facebook-react", "week", "aic")
