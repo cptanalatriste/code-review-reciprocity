@@ -2,7 +2,7 @@ import itertools
 import logging
 import traceback
 from math import ceil
-from typing import Tuple, Any, Optional
+from typing import Tuple, Any, Optional, List
 
 import elasticsearch
 import matplotlib.pyplot as plt
@@ -20,7 +20,7 @@ from aggregation import MERGES_PERFORMED_COLUMN, MERGES_SUCCESSFUL_COLUMN, get_m
     get_requests_merged, get_all_mergers, MERGES_REQUESTED_COLUMN
 from config import ELASTICSEARCH_HOST
 
-VARIABLES: Tuple[str, str] = (MERGES_PERFORMED_COLUMN, MERGES_REQUESTED_COLUMN)
+VARIABLES: Tuple[str, str] = (MERGES_PERFORMED_COLUMN, MERGES_SUCCESSFUL_COLUMN)
 IMAGE_DIRECTORY: str = "img/"
 DATA_DIRECTORY: str = "csv/"
 
@@ -64,6 +64,24 @@ def check_causality(training_result: VARResults, causality_threshold=0.05) -> di
     return test_results
 
 
+def fit_var_model(var_model: VAR, information_criterion: str, user_login: str) -> Tuple[
+    VARResults, WhitenessTestResults]:
+    order_results: LagOrderResults = var_model.select_order()
+    candidate_order: int = order_results.selected_orders[information_criterion]
+
+    training_result: VARResults = var_model.fit(maxlags=candidate_order)
+    whiteness_result: WhitenessTestResults = training_result.test_whiteness(nlags=ceil(candidate_order * 1.5))
+
+    while whiteness_result.conclusion == "reject" and candidate_order <= 12:
+        candidate_order += 1
+        logging.warning("ALERT! Serial correlation in residuals for user %s. Increasing lag order to %d" % (
+            user_login, candidate_order))
+        training_result: VARResults = var_model.fit(maxlags=candidate_order)
+        whiteness_result: WhitenessTestResults = training_result.test_whiteness(nlags=ceil(candidate_order * 1.5))
+
+    return training_result, whiteness_result
+
+
 def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str,
                     project: str,
                     information_criterion='bic',
@@ -72,10 +90,6 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str,
     train_dataset: pd.DataFrame = consolidated_dataframe[:-test_observations]
     test_dataset: pd.DataFrame = consolidated_dataframe[-test_observations:]
     print("%s Train data: %d Test data: %d" % (user_login, len(train_dataset), len(test_dataset)))
-
-    var_model: VAR = VAR(train_dataset)
-    order_results: LagOrderResults = var_model.select_order()
-    print(order_results.summary())
 
     result_analysis: dict[str, Any] = {
         "var_order": set(),
@@ -86,22 +100,24 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str,
         print("Permutation %d : %s" % (permutation_index, str(permutation)))
         train_dataset: pd.DataFrame = train_dataset[list(permutation)]
 
-        training_result: VARResults = var_model.fit(ic=information_criterion)
+        var_model: VAR = VAR(train_dataset)
+        training_result, whiteness_result = fit_var_model(var_model, information_criterion, user_login)
+
         print(training_result.summary())
+        print(whiteness_result.summary())
 
         var_order: int = training_result.k_ar
         result_analysis["var_order"].add(training_result.k_ar)
-        if not var_order:
-            logging.error("Model with 0 lags for user %s. Cannot test Granger Causality" % user_login)
-            continue
 
-        whiteness_result: WhitenessTestResults = training_result.test_whiteness(nlags=ceil(var_order * 1.5))
-        print(whiteness_result.summary())
         if whiteness_result.conclusion == "reject":
             logging.error("ALERT! Serial correlation found in the residuals for user %s" % user_login)
             result_analysis["serial_correlation"].add(True)
         else:
             result_analysis["serial_correlation"].add(False)
+
+        if not var_order:
+            logging.error("Model with 0 lags for user %s. Cannot test Granger Causality" % user_login)
+            continue
 
         causality_results: dict[str, bool] = check_causality(training_result)
         for test, result in causality_results.items():
@@ -192,7 +208,9 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, ca
         is_stationary: bool = check_stationarity(after_differencing_data, user_login, variable)
         if not is_stationary:
             logging.error("ALERT! %s is not stationary" % variable)
-            return analysis_result
+            analysis_result[variable + "_stationary"] = False
+        else:
+            analysis_result[variable + "_stationary"] = True
 
     var_results: dict[str, Any] = train_var_model(after_differencing_data[list(VARIABLES)], user_login,
                                                   project, information_criterion=information_criterion)
@@ -211,8 +229,12 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, ca
     return analysis_result
 
 
-def start_analysis(pull_request_index: str, calendar_interval: str, information_criterion: str):
-    es: Elasticsearch = elasticsearch.Elasticsearch(ELASTICSEARCH_HOST)
+def analyse_project(es: Elasticsearch, pull_request_index: str, calendar_interval: str,
+                    information_criterion: str) -> int:
+    es.indices.refresh(index=pull_request_index)
+    document_count: List[dict] = es.cat.count(index=pull_request_index, params={"format": "json"})
+    documents: int = int(document_count[0]['count'])
+    print("Documents on index %s: %s" % (pull_request_index, documents))
 
     all_mergers: list[str] = get_all_mergers(es, pull_request_index)
     merger_data: list[dict[str, Any]] = []
@@ -230,7 +252,16 @@ def start_analysis(pull_request_index: str, calendar_interval: str, information_
     csv_file: str = DATA_DIRECTORY + "%s_consolidated_analysis_%s.csv" % (pull_request_index, calendar_interval)
     consolidated_analysis.to_csv(csv_file)
     print("Results written in %s" % csv_file)
+    return documents
 
 
 if __name__ == "__main__":
-    start_analysis("google-googletest", "month", "aic")
+    elastic_search: Elasticsearch = elasticsearch.Elasticsearch(ELASTICSEARCH_HOST)
+    indices: List[str] = ["microsoft-vscode", "microsoft-typescript", "google-guava", "google-googletest",
+                          "facebook-react", "apache-spark", "eclipse-jetty.project"]
+
+    total_documents: int = 0
+    for index in indices:
+        total_documents += analyse_project(elastic_search, index, "week", "aic")
+
+    print("Total documents: %d from %d projects" % (total_documents, len(indices)))
