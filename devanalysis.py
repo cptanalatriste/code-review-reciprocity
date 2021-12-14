@@ -4,7 +4,6 @@ import traceback
 from math import ceil
 from typing import Tuple, Any, Optional, List
 
-import elasticsearch
 import matplotlib.pyplot as plt
 import pandas as pd
 from elasticsearch import Elasticsearch
@@ -18,11 +17,9 @@ from statsmodels.tsa.vector_ar.var_model import VARResults, LagOrderResults
 
 from aggregation import MERGES_PERFORMED_COLUMN, MERGES_SUCCESSFUL_COLUMN, get_merges_performed, get_merge_requests, \
     get_requests_merged, get_all_mergers, MERGES_REQUESTED_COLUMN
-from config import ELASTICSEARCH_HOST
 
 VARIABLES: Tuple[str, str] = (MERGES_PERFORMED_COLUMN, MERGES_SUCCESSFUL_COLUMN)
 IMAGE_DIRECTORY: str = "img/"
-DATA_DIRECTORY: str = "csv/"
 
 
 def plot_dataframe(consolidated_dataframe: pd.DataFrame, plot_title: str) -> None:
@@ -30,7 +27,6 @@ def plot_dataframe(consolidated_dataframe: pd.DataFrame, plot_title: str) -> Non
     plt.style.use('fivethirtyeight')
     _ = consolidated_dataframe.plot(subplots=True, linewidth=2, fontsize=12, title=plot_title)
     plt.savefig(IMAGE_DIRECTORY + plot_title + ".png")
-    plt.show()
 
 
 def check_stationarity(consolidated_dataframe: pd.DataFrame, user_login: str, data_column: str,
@@ -84,6 +80,7 @@ def fit_var_model(var_model: VAR, information_criterion: str, user_login: str) -
 
 def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str,
                     project: str,
+                    calendar_interval: str,
                     information_criterion='bic',
                     periods=24) -> dict[str, set]:
     test_observations: int = 6
@@ -129,11 +126,13 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str,
 
         impulse_response: IRAnalysis = training_result.irf(periods=periods)
         impulse_response.plot(figsize=(15, 15))
-        plt.savefig(IMAGE_DIRECTORY + "%s_%s_impulse_response_%i.png" % (user_login, project, permutation_index))
+        plt.savefig(IMAGE_DIRECTORY + "%s_%s_impulse_response_%s_%i.png" % (
+            user_login, project, calendar_interval, permutation_index))
 
         variance_decomposition = training_result.fevd(periods=periods)
         variance_decomposition.plot(figsize=(15, 15))
-        plt.savefig(IMAGE_DIRECTORY + "%s_%s_variance_decomposition_%i.png" % (user_login, project, permutation_index))
+        plt.savefig(IMAGE_DIRECTORY + "%s_%s_variance_decomposition_%s_%i.png" % (
+            user_login, project, calendar_interval, permutation_index))
 
     return result_analysis
 
@@ -194,7 +193,8 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, ca
 
     analysis_result: dict[str, Any] = {
         "user_login": user_login,
-        "data_points": data_points
+        "data_points": data_points,
+        "index": pull_request_index
     }
 
     for column in VARIABLES:
@@ -213,7 +213,8 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, ca
             analysis_result[variable + "_stationary"] = True
 
     var_results: dict[str, Any] = train_var_model(after_differencing_data[list(VARIABLES)], user_login,
-                                                  project, information_criterion=information_criterion)
+                                                  project, calendar_interval,
+                                                  information_criterion=information_criterion)
 
     try:
         plot_dataframe(consolidated_dataframe, "%s_%s_before_differencing" % (user_login, project))
@@ -230,7 +231,7 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, ca
 
 
 def analyse_project(es: Elasticsearch, pull_request_index: str, calendar_interval: str,
-                    information_criterion: str) -> int:
+                    information_criterion: str) -> pd.DataFrame:
     es.indices.refresh(index=pull_request_index)
     document_count: List[dict] = es.cat.count(index=pull_request_index, params={"format": "json"})
     documents: int = int(document_count[0]['count'])
@@ -249,19 +250,4 @@ def analyse_project(es: Elasticsearch, pull_request_index: str, calendar_interva
             logging.error("Cannot analyse user %s" % merger)
 
     consolidated_analysis: pd.DataFrame = pd.DataFrame(merger_data)
-    csv_file: str = DATA_DIRECTORY + "%s_consolidated_analysis_%s.csv" % (pull_request_index, calendar_interval)
-    consolidated_analysis.to_csv(csv_file)
-    print("Results written in %s" % csv_file)
-    return documents
-
-
-if __name__ == "__main__":
-    elastic_search: Elasticsearch = elasticsearch.Elasticsearch(ELASTICSEARCH_HOST)
-    indices: List[str] = ["microsoft-vscode", "microsoft-typescript", "google-guava", "google-googletest",
-                          "facebook-react", "apache-spark", "eclipse-jetty.project"]
-
-    total_documents: int = 0
-    for index in indices:
-        total_documents += analyse_project(elastic_search, index, "week", "aic")
-
-    print("Total documents: %d from %d projects" % (total_documents, len(indices)))
+    return consolidated_analysis
