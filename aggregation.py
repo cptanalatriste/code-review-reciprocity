@@ -99,10 +99,6 @@ def get_requests_merged(es: Elasticsearch, pull_request_index: str, user_login: 
 def get_all_mergers(es: Elasticsearch, pull_request_index: str, ) -> List[str]:
     aggregation_name: str = "frequent_mergers"
 
-    es.indices.refresh(index=pull_request_index)
-    document_count: List[dict] = es.cat.count(index=pull_request_index, params={"format": "json"})
-    print("Documents on index %s: %s" % (pull_request_index, document_count[0]['count']))
-
     search_results: dict[str, dict] = es.search(index=pull_request_index,
                                                 size=0,
                                                 aggs={
