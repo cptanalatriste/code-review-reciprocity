@@ -77,6 +77,29 @@ def fit_var_model(var_model: VAR, information_criterion: str, user_login: str) -
     return training_result, whiteness_result
 
 
+def do_structural_analysis(variables: Tuple, training_result: VARResults, periods: int,
+                           user_login: str, project: str, calendar_interval: str, index: int) -> dict[str, bool]:
+    causality_results: dict[str, bool] = {}
+    try:
+        causality_results = check_causality(variables, training_result)
+
+        impulse_response: IRAnalysis = training_result.irf(periods=periods)
+        impulse_response.plot(figsize=(15, 15))
+        plt.savefig(IMAGE_DIRECTORY + "%s_%s_impulse_response_%s_%i.png" % (
+            user_login, project, calendar_interval, index))
+
+        variance_decomposition = training_result.fevd(periods=periods)
+        variance_decomposition.plot(figsize=(15, 15))
+        plt.savefig(IMAGE_DIRECTORY + "%s_%s_variance_decomposition_%s_%i.png" % (
+            user_login, project, calendar_interval, index))
+
+    except Exception:
+        logging.error(traceback.format_exc())
+        logging.error("Cannot do structural analysis for user %s" % user_login)
+    finally:
+        return causality_results
+
+
 def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, variables: Tuple, project: str,
                     calendar_interval: str, information_criterion='bic', periods=24) -> dict[str, set]:
     test_observations: int = 6
@@ -95,11 +118,9 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, varia
 
         var_model: VAR = VAR(train_dataset)
         training_result, whiteness_result = fit_var_model(var_model, information_criterion, user_login)
-
         print(training_result.summary())
         print(whiteness_result.summary())
 
-        var_order: int = training_result.k_ar
         result_analysis["var_order"].add(training_result.k_ar)
 
         if whiteness_result.conclusion == "reject":
@@ -108,27 +129,15 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, varia
         else:
             result_analysis["serial_correlation"].add(False)
 
-        if not var_order:
-            logging.error("Model with 0 lags for user %s. Cannot test Granger Causality" % user_login)
-            continue
+        causality_results: dict[str, bool] = do_structural_analysis(variables, training_result, periods, user_login,
+                                                                    project, calendar_interval, permutation_index)
 
-        causality_results: dict[str, bool] = check_causality(variables, training_result)
         for test, result in causality_results.items():
             if test in result_analysis:
                 result_analysis[test].add(result)
             else:
                 result_analysis[test] = set()
                 result_analysis[test].add(result)
-
-        impulse_response: IRAnalysis = training_result.irf(periods=periods)
-        impulse_response.plot(figsize=(15, 15))
-        plt.savefig(IMAGE_DIRECTORY + "%s_%s_impulse_response_%s_%i.png" % (
-            user_login, project, calendar_interval, permutation_index))
-
-        variance_decomposition = training_result.fevd(periods=periods)
-        variance_decomposition.plot(figsize=(15, 15))
-        plt.savefig(IMAGE_DIRECTORY + "%s_%s_variance_decomposition_%s_%i.png" % (
-            user_login, project, calendar_interval, permutation_index))
 
     return result_analysis
 
