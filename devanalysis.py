@@ -18,7 +18,6 @@ from statsmodels.tsa.vector_ar.var_model import VARResults, LagOrderResults
 from aggregation import MERGES_PERFORMED_COLUMN, MERGES_SUCCESSFUL_COLUMN, get_merges_performed, get_merge_requests, \
     get_requests_merged, get_all_mergers, MERGES_REQUESTED_COLUMN
 
-VARIABLES: Tuple[str, str] = (MERGES_PERFORMED_COLUMN, MERGES_SUCCESSFUL_COLUMN)
 IMAGE_DIRECTORY: str = "img/"
 
 
@@ -44,10 +43,10 @@ def check_stationarity(consolidated_dataframe: pd.DataFrame, user_login: str, da
     return True
 
 
-def check_causality(training_result: VARResults, causality_threshold=0.05) -> dict[str, bool]:
+def check_causality(variables: Tuple, training_result: VARResults, causality_threshold=0.05) -> dict[str, bool]:
     test_results: dict[str, Any] = {}
-    for cause_data_column in VARIABLES:
-        for effect_data_column in VARIABLES:
+    for cause_data_column in variables:
+        for effect_data_column in variables:
             if cause_data_column != effect_data_column:
                 causality_results: CausalityTestResults = training_result.test_causality(causing=cause_data_column,
                                                                                          caused=effect_data_column,
@@ -78,11 +77,8 @@ def fit_var_model(var_model: VAR, information_criterion: str, user_login: str) -
     return training_result, whiteness_result
 
 
-def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str,
-                    project: str,
-                    calendar_interval: str,
-                    information_criterion='bic',
-                    periods=24) -> dict[str, set]:
+def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, variables: Tuple, project: str,
+                    calendar_interval: str, information_criterion='bic', periods=24) -> dict[str, set]:
     test_observations: int = 6
     train_dataset: pd.DataFrame = consolidated_dataframe[:-test_observations]
     test_dataset: pd.DataFrame = consolidated_dataframe[-test_observations:]
@@ -93,7 +89,7 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str,
         "serial_correlation": set()
     }
 
-    for permutation_index, permutation in enumerate(itertools.permutations(VARIABLES)):
+    for permutation_index, permutation in enumerate(itertools.permutations(variables)):
         print("Permutation %d : %s" % (permutation_index, str(permutation)))
         train_dataset: pd.DataFrame = train_dataset[list(permutation)]
 
@@ -116,7 +112,7 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str,
             logging.error("Model with 0 lags for user %s. Cannot test Granger Causality" % user_login)
             continue
 
-        causality_results: dict[str, bool] = check_causality(training_result)
+        causality_results: dict[str, bool] = check_causality(variables, training_result)
         for test, result in causality_results.items():
             if test in result_analysis:
                 result_analysis[test].add(result)
@@ -148,10 +144,10 @@ def plot_seasonal_decomposition(consolidated_dataframe: pd.DataFrame, user_login
     plt.savefig(IMAGE_DIRECTORY + "%s_%s_seasonal_decomposition_%s.png" % (user_login, project, column))
 
 
-def consolidate_dataframe(es: Elasticsearch, pull_request_index: str, user_login: str,
+def consolidate_dataframe(es: Elasticsearch, pull_request_index: str, user_login: str, variables: Tuple,
                           calendar_interval: str) -> pd.DataFrame:
     data: list[pd.DataFrame] = []
-    if MERGES_PERFORMED_COLUMN in VARIABLES:
+    if MERGES_PERFORMED_COLUMN in variables:
         merges_performed_dataframe: pd.DataFrame = get_merges_performed(es, pull_request_index, user_login,
                                                                         calendar_interval)
         if not len(merges_performed_dataframe):
@@ -160,12 +156,12 @@ def consolidate_dataframe(es: Elasticsearch, pull_request_index: str, user_login
 
         data.append(merges_performed_dataframe)
 
-    if MERGES_REQUESTED_COLUMN in VARIABLES:
+    if MERGES_REQUESTED_COLUMN in variables:
         merge_requests_dataframe: pd.DataFrame = get_merge_requests(es, pull_request_index, user_login,
                                                                     calendar_interval)
         data.append(merge_requests_dataframe)
 
-    if MERGES_SUCCESSFUL_COLUMN in VARIABLES:
+    if MERGES_SUCCESSFUL_COLUMN in variables:
         requests_merged_dataframe: pd.DataFrame = get_requests_merged(es, pull_request_index, user_login,
                                                                       calendar_interval)
         if not len(requests_merged_dataframe):
@@ -180,10 +176,10 @@ def consolidate_dataframe(es: Elasticsearch, pull_request_index: str, user_login
     return consolidated_dataframe
 
 
-def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, calendar_interval: str,
+def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, variables: Tuple, calendar_interval: str,
                  information_criterion: str,
                  project: str) -> Optional[dict[str, Any]]:
-    consolidated_dataframe = consolidate_dataframe(es, pull_request_index, user_login, calendar_interval)
+    consolidated_dataframe = consolidate_dataframe(es, pull_request_index, user_login, variables, calendar_interval)
     data_points: int = len(consolidated_dataframe)
     if not len(consolidated_dataframe):
         print("No data points for user %s" % user_login)
@@ -197,14 +193,14 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, ca
         "index": pull_request_index
     }
 
-    for column in VARIABLES:
+    for column in variables:
         analysis_result[column] = consolidated_dataframe[column].sum()
 
     after_differencing_data = consolidated_dataframe.diff()
     after_differencing_data = after_differencing_data.dropna()
     print("Applying 1st order differencing to the data")
 
-    for variable in VARIABLES:
+    for variable in variables:
         is_stationary: bool = check_stationarity(after_differencing_data, user_login, variable)
         if not is_stationary:
             logging.error("ALERT! %s is not stationary" % variable)
@@ -212,7 +208,7 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, ca
         else:
             analysis_result[variable + "_stationary"] = True
 
-    var_results: dict[str, Any] = train_var_model(after_differencing_data[list(VARIABLES)], user_login,
+    var_results: dict[str, Any] = train_var_model(after_differencing_data[list(variables)], user_login, variables,
                                                   project, calendar_interval,
                                                   information_criterion=information_criterion)
 
@@ -230,7 +226,7 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, ca
     return analysis_result
 
 
-def analyse_project(es: Elasticsearch, pull_request_index: str, calendar_interval: str,
+def analyse_project(es: Elasticsearch, pull_request_index: str, calendar_interval: str, variables: Tuple,
                     information_criterion: str) -> pd.DataFrame:
     es.indices.refresh(index=pull_request_index)
     document_count: List[dict] = es.cat.count(index=pull_request_index, params={"format": "json"})
@@ -239,15 +235,16 @@ def analyse_project(es: Elasticsearch, pull_request_index: str, calendar_interva
 
     all_mergers: list[str] = get_all_mergers(es, pull_request_index)
     merger_data: list[dict[str, Any]] = []
-    for merger in all_mergers:
+    for user_login in all_mergers:
         try:
-            user_analysis: dict[str, Any] = analyse_user(es, pull_request_index, merger, calendar_interval,
+            user_analysis: dict[str, Any] = analyse_user(es, pull_request_index, user_login, variables,
+                                                         calendar_interval,
                                                          information_criterion, pull_request_index)
             if user_analysis:
                 merger_data.append(user_analysis)
         except Exception:
             logging.error(traceback.format_exc())
-            logging.error("Cannot analyse user %s" % merger)
+            logging.error("Cannot analyse user %s" % user_login)
 
     consolidated_analysis: pd.DataFrame = pd.DataFrame(merger_data)
     return consolidated_analysis
