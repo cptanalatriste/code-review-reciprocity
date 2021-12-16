@@ -236,7 +236,7 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, va
 
 
 def analyse_project(es: Elasticsearch, pull_request_index: str, calendar_interval: str, variables: Tuple,
-                    information_criterion: str) -> pd.DataFrame:
+                    information_criterion: str) -> Tuple[int, pd.DataFrame]:
     es.indices.refresh(index=pull_request_index)
     document_count: List[dict] = es.cat.count(index=pull_request_index, params={"format": "json"})
     documents: int = int(document_count[0]['count'])
@@ -256,4 +256,4 @@ def analyse_project(es: Elasticsearch, pull_request_index: str, calendar_interva
             logging.error("Cannot analyse user %s" % user_login)
 
     consolidated_analysis: pd.DataFrame = pd.DataFrame(merger_data)
-    return consolidated_analysis
+    return documents, consolidated_analysis
