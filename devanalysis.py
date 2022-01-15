@@ -70,7 +70,7 @@ def check_causality(variables: Tuple, training_result: VARResults, user_login: s
 
 
 def get_lags_for_whiteness_test(user_login: str, sample_size: int, candidate_order) -> int:
-    lags_for_whiteness: int = max(round(sqrt(sample_size)), candidate_order)
+    lags_for_whiteness: int = max(round(sqrt(sample_size)), candidate_order + 1)
     logging.info(
         "User {}: Portmanteau test using lags {} for VAR({}) and {} samples".format(user_login, lags_for_whiteness,
                                                                                     candidate_order, sample_size))
@@ -78,7 +78,7 @@ def get_lags_for_whiteness_test(user_login: str, sample_size: int, candidate_ord
 
 
 def fit_var_model(var_model: VAR, information_criterion: str, user_login: str, sample_size: int) -> Tuple[
-    VARResults, WhitenessTestResults, NormalityTestResults]:
+    VARResults, WhitenessTestResults, NormalityTestResults, LagOrderResults]:
     order_results: LagOrderResults = var_model.select_order()
     candidate_order: int = order_results.selected_orders[information_criterion]
 
@@ -100,7 +100,7 @@ def fit_var_model(var_model: VAR, information_criterion: str, user_login: str, s
     print(whiteness_result.summary())
     print(normality_result.summary())
 
-    return training_result, whiteness_result, normality_result
+    return training_result, whiteness_result, normality_result, order_results
 
 
 def do_structural_analysis(variables: Tuple, training_result: VARResults, periods: int,
@@ -135,13 +135,15 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, varia
     test_observations: int = 6
     train_dataset: pd.DataFrame = consolidated_dataframe[:-test_observations]
     test_dataset: pd.DataFrame = consolidated_dataframe[-test_observations:]
-    print("%s Train data: %d Test data: %d" % (user_login, len(train_dataset), len(test_dataset)))
+    train_sample_size: int = len(train_dataset)
+    print("%s Train data: %d Test data: %d" % (user_login, train_sample_size, len(test_dataset)))
 
     var_order_key: str = "var_order"
     serial_correlation_key: str = "serial_correlation"
     residual_white_noise_key: str = "residual_white_noise"
 
     result_analysis: dict[str, Any] = {
+        "train_sample_size": [train_sample_size],
         var_order_key: set(),
         serial_correlation_key: set(),
         residual_white_noise_key: set()
@@ -152,13 +154,16 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, varia
         train_dataset: pd.DataFrame = train_dataset[list(permutation)]
 
         var_model: VAR = VAR(train_dataset)
-        training_result, whiteness_result, normality_result = fit_var_model(var_model, information_criterion,
-                                                                            user_login, len(train_dataset))
+        training_result, whiteness_result, normality_result, var_order_result = fit_var_model(var_model,
+                                                                                              information_criterion,
+                                                                                              user_login,
+                                                                                              train_sample_size)
 
         user_report_file: str = TEXT_DIRECTORY + "user_{}_permutation_{}_analysis_results.txt".format(user_login,
                                                                                                       permutation_index)
         with open(user_report_file, "a") as file:
             file.truncate()
+            file.write(str(var_order_result.summary()) + "\n")
             file.write(str(training_result.summary()) + "\n")
             file.write(str(whiteness_result.summary()) + "\n")
             file.write(str(normality_result.summary()) + "\n")
