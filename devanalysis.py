@@ -16,8 +16,8 @@ from statsmodels.tsa.vector_ar.hypothesis_test_results import CausalityTestResul
 from statsmodels.tsa.vector_ar.irf import IRAnalysis
 from statsmodels.tsa.vector_ar.var_model import VARResults, LagOrderResults
 
-from aggregation import MERGES_PERFORMED_COLUMN, MERGES_SUCCESSFUL_COLUMN, get_merges_performed, get_merge_requests, \
-    get_requests_merged, get_all_mergers, MERGES_REQUESTED_COLUMN
+from aggregation import PRS_REVIEWED_AND_MERGED, PRS_AUTHORED_AND_MERGED, get_prs_reviewed_and_merged, get_prs_authored, \
+    get_prs_authored_and_merged, get_all_mergers, PRS_AUTHORED
 
 IMAGE_DIRECTORY: str = "img/"
 TEXT_DIRECTORY: str = "txt/"
@@ -197,7 +197,7 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, varia
 
 def plot_seasonal_decomposition(consolidated_dataframe: pd.DataFrame, user_login: str,
                                 project: str,
-                                column: str = MERGES_PERFORMED_COLUMN) -> None:
+                                column: str = PRS_REVIEWED_AND_MERGED) -> None:
     merges_performed_decomposition: DecomposeResult = seasonal_decompose(
         consolidated_dataframe[column],
         model='additive')
@@ -209,23 +209,23 @@ def plot_seasonal_decomposition(consolidated_dataframe: pd.DataFrame, user_login
 def consolidate_dataframe(es: Elasticsearch, pull_request_index: str, user_login: str, variables: Tuple,
                           calendar_interval: str) -> pd.DataFrame:
     data: list[pd.DataFrame] = []
-    if MERGES_PERFORMED_COLUMN in variables:
-        merges_performed_dataframe: pd.DataFrame = get_merges_performed(es, pull_request_index, user_login,
-                                                                        calendar_interval)
+    if PRS_REVIEWED_AND_MERGED in variables:
+        merges_performed_dataframe: pd.DataFrame = get_prs_reviewed_and_merged(es, pull_request_index, user_login,
+                                                                               calendar_interval)
         if not len(merges_performed_dataframe):
             logging.error("User %s does not merge PRs for other developers" % user_login)
             return pd.DataFrame()
 
         data.append(merges_performed_dataframe)
 
-    if MERGES_REQUESTED_COLUMN in variables:
-        merge_requests_dataframe: pd.DataFrame = get_merge_requests(es, pull_request_index, user_login,
-                                                                    calendar_interval)
+    if PRS_AUTHORED in variables:
+        merge_requests_dataframe: pd.DataFrame = get_prs_authored(es, pull_request_index, user_login,
+                                                                  calendar_interval)
         data.append(merge_requests_dataframe)
 
-    if MERGES_SUCCESSFUL_COLUMN in variables:
-        requests_merged_dataframe: pd.DataFrame = get_requests_merged(es, pull_request_index, user_login,
-                                                                      calendar_interval)
+    if PRS_AUTHORED_AND_MERGED in variables:
+        requests_merged_dataframe: pd.DataFrame = get_prs_authored_and_merged(es, pull_request_index, user_login,
+                                                                              calendar_interval)
         if not len(requests_merged_dataframe):
             logging.error("User %s does not have PRs merged by other developers" % user_login)
             return pd.DataFrame()

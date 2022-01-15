@@ -4,9 +4,9 @@ from typing import List, Any
 import pandas as pd
 from elasticsearch import Elasticsearch
 
-MERGES_PERFORMED_COLUMN: str = "merges_performed"
-MERGES_SUCCESSFUL_COLUMN: str = "requests_merged"
-MERGES_REQUESTED_COLUMN: str = "merge_requests"
+PRS_REVIEWED_AND_MERGED: str = "prs_reviewed_and_merged"
+PRS_AUTHORED_AND_MERGED: str = "prs_authored_and_merged"
+PRS_AUTHORED: str = "prs_authored"
 
 
 def do_query_with_aggregation(elastic_search: Elasticsearch, pull_request_index: str, aggregation_name: str,
@@ -34,10 +34,10 @@ def do_query_with_aggregation(elastic_search: Elasticsearch, pull_request_index:
     return result_dataframe
 
 
-def get_merges_performed(es: Elasticsearch, pull_request_index: str, user_login: str,
+def get_prs_reviewed_and_merged(es: Elasticsearch, pull_request_index: str, user_login: str,
 
-                         calendar_interval: str = "month") -> pd.DataFrame:
-    result_dataframe: pd.DataFrame = do_query_with_aggregation(es, pull_request_index, MERGES_PERFORMED_COLUMN, query={
+                                calendar_interval: str = "month") -> pd.DataFrame:
+    result_dataframe: pd.DataFrame = do_query_with_aggregation(es, pull_request_index, PRS_REVIEWED_AND_MERGED, query={
         "bool": {
             "must": {
                 "match": {"merged_by.login": user_login}
@@ -54,10 +54,10 @@ def get_merges_performed(es: Elasticsearch, pull_request_index: str, user_login:
     return result_dataframe
 
 
-def get_merge_requests(elastic_search: Elasticsearch, pull_request_index: str, user_login: str,
-                       calendar_interval: str = "month") -> pd.DataFrame:
+def get_prs_authored(elastic_search: Elasticsearch, pull_request_index: str, user_login: str,
+                     calendar_interval: str = "month") -> pd.DataFrame:
     result_dataframe: pd.DataFrame = do_query_with_aggregation(elastic_search, pull_request_index,
-                                                               MERGES_REQUESTED_COLUMN,
+                                                               PRS_AUTHORED,
                                                                query={"bool": {
                                                                    "must": {
                                                                        "match": {"user.login": user_login}
@@ -73,9 +73,9 @@ def get_merge_requests(elastic_search: Elasticsearch, pull_request_index: str, u
     return result_dataframe
 
 
-def get_requests_merged(es: Elasticsearch, pull_request_index: str, user_login: str,
-                        calendar_interval: str = "month"):
-    result_dataframe: pd.DataFrame = do_query_with_aggregation(es, pull_request_index, MERGES_SUCCESSFUL_COLUMN, query={
+def get_prs_authored_and_merged(es: Elasticsearch, pull_request_index: str, user_login: str,
+                                calendar_interval: str = "month"):
+    result_dataframe: pd.DataFrame = do_query_with_aggregation(es, pull_request_index, PRS_AUTHORED_AND_MERGED, query={
         "bool": {
             "must": [
                 {
