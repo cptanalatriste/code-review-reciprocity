@@ -1,7 +1,7 @@
 import itertools
 import logging
 import traceback
-from math import ceil
+from math import sqrt
 from typing import Tuple, Any, Optional, List
 
 import matplotlib.pyplot as plt
@@ -20,6 +20,7 @@ from aggregation import MERGES_PERFORMED_COLUMN, MERGES_SUCCESSFUL_COLUMN, get_m
     get_requests_merged, get_all_mergers, MERGES_REQUESTED_COLUMN
 
 IMAGE_DIRECTORY: str = "img/"
+TEXT_DIRECTORY: str = "txt/"
 
 
 def plot_dataframe(consolidated_dataframe: pd.DataFrame, plot_title: str) -> None:
@@ -31,6 +32,7 @@ def plot_dataframe(consolidated_dataframe: pd.DataFrame, plot_title: str) -> Non
 
 def check_stationarity(consolidated_dataframe: pd.DataFrame, user_login: str, data_column: str,
                        threshold: float = 0.05) -> bool:
+    # noinspection PyTypeChecker
     test_result: list[float] = adfuller(consolidated_dataframe[data_column])
     adf_statistic: float = test_result[0]
     p_value: float = test_result[1]
@@ -44,7 +46,8 @@ def check_stationarity(consolidated_dataframe: pd.DataFrame, user_login: str, da
     return True
 
 
-def check_causality(variables: Tuple, training_result: VARResults, causality_threshold=0.05) -> dict[str, bool]:
+def check_causality(variables: Tuple, training_result: VARResults, user_login: str, permutation_index: int,
+                    causality_threshold=0.05) -> dict[str, bool]:
     test_results: dict[str, Any] = {}
     for cause_data_column in variables:
         for effect_data_column in variables:
@@ -53,6 +56,12 @@ def check_causality(variables: Tuple, training_result: VARResults, causality_thr
                                                                                          caused=effect_data_column,
                                                                                          kind='wald',
                                                                                          signif=causality_threshold)
+
+                with open(TEXT_DIRECTORY + "user_{}_permutation_{}_analysis_results.txt".format(user_login,
+                                                                                                permutation_index),
+                          "a") as file:
+                    file.write(str(causality_results.summary()) + "\n")
+
                 granger_causality: bool = causality_results.conclusion == "reject"
                 test_results[cause_data_column + "->" + effect_data_column] = granger_causality
                 print(causality_results.summary())
@@ -60,13 +69,22 @@ def check_causality(variables: Tuple, training_result: VARResults, causality_thr
     return test_results
 
 
-def fit_var_model(var_model: VAR, information_criterion: str, user_login: str) -> Tuple[
+def get_lags_for_whiteness_test(user_login: str, sample_size: int, candidate_order) -> int:
+    lags_for_whiteness: int = max(round(sqrt(sample_size)), candidate_order)
+    logging.info(
+        "User {}: Portmanteau test using lags {} for VAR({}) and {} samples".format(user_login, lags_for_whiteness,
+                                                                                    candidate_order, sample_size))
+    return lags_for_whiteness
+
+
+def fit_var_model(var_model: VAR, information_criterion: str, user_login: str, sample_size: int) -> Tuple[
     VARResults, WhitenessTestResults, NormalityTestResults]:
     order_results: LagOrderResults = var_model.select_order()
     candidate_order: int = order_results.selected_orders[information_criterion]
 
     training_result: VARResults = var_model.fit(maxlags=candidate_order)
-    whiteness_result: WhitenessTestResults = training_result.test_whiteness(nlags=ceil(candidate_order * 1.5))
+    whiteness_result: WhitenessTestResults = training_result.test_whiteness(
+        nlags=get_lags_for_whiteness_test(user_login, sample_size, candidate_order))
     normality_result: NormalityTestResults = training_result.test_normality()
 
     while whiteness_result.conclusion == "reject" and candidate_order <= 12:
@@ -74,30 +92,36 @@ def fit_var_model(var_model: VAR, information_criterion: str, user_login: str) -
         logging.warning("ALERT! Serial correlation in residuals for user %s. Increasing lag order to %d" % (
             user_login, candidate_order))
         training_result: VARResults = var_model.fit(maxlags=candidate_order)
-        whiteness_result: WhitenessTestResults = training_result.test_whiteness(nlags=ceil(candidate_order * 1.5))
+        whiteness_result: WhitenessTestResults = training_result.test_whiteness(
+            nlags=get_lags_for_whiteness_test(user_login, sample_size, candidate_order))
         normality_result: NormalityTestResults = training_result.test_normality()
+
+    print(training_result.summary())
+    print(whiteness_result.summary())
+    print(normality_result.summary())
 
     return training_result, whiteness_result, normality_result
 
 
 def do_structural_analysis(variables: Tuple, training_result: VARResults, periods: int,
-                           user_login: str, project: str, calendar_interval: str, index: int) -> dict[str, bool]:
+                           user_login: str, project: str, calendar_interval: str, permutation_index: int) -> dict[
+    str, bool]:
     causality_results: dict[str, bool] = {}
     try:
-        causality_results = check_causality(variables, training_result)
+        causality_results = check_causality(variables, training_result, user_login, permutation_index)
 
         impulse_response: IRAnalysis = training_result.irf(periods=periods)
         impulse_response.plot(figsize=(15, 15))
         plt.savefig(IMAGE_DIRECTORY + "%s_%s_impulse_response_%s_%i.png" % (
-            user_login, project, calendar_interval, index))
+            user_login, project, calendar_interval, permutation_index))
         impulse_response.plot_cum_effects(figsize=(15, 15))
         plt.savefig(IMAGE_DIRECTORY + "%s_%s_cumulative_response_%s_%i.png" % (
-            user_login, project, calendar_interval, index))
+            user_login, project, calendar_interval, permutation_index))
 
         variance_decomposition = training_result.fevd(periods=periods)
         variance_decomposition.plot(figsize=(15, 15))
         plt.savefig(IMAGE_DIRECTORY + "%s_%s_variance_decomposition_%s_%i.png" % (
-            user_login, project, calendar_interval, index))
+            user_login, project, calendar_interval, permutation_index))
 
     except Exception:
         logging.error(traceback.format_exc())
@@ -129,10 +153,15 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, varia
 
         var_model: VAR = VAR(train_dataset)
         training_result, whiteness_result, normality_result = fit_var_model(var_model, information_criterion,
-                                                                            user_login)
-        print(training_result.summary())
-        print(whiteness_result.summary())
-        print(normality_result.summary())
+                                                                            user_login, len(train_dataset))
+
+        user_report_file: str = TEXT_DIRECTORY + "user_{}_permutation_{}_analysis_results.txt".format(user_login,
+                                                                                                      permutation_index)
+        with open(user_report_file, "a") as file:
+            file.truncate()
+            file.write(str(training_result.summary()) + "\n")
+            file.write(str(whiteness_result.summary()) + "\n")
+            file.write(str(normality_result.summary()) + "\n")
 
         result_analysis[var_order_key].add(training_result.k_ar)
 
@@ -257,6 +286,7 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, va
 def analyse_project(es: Elasticsearch, pull_request_index: str, calendar_interval: str, variables: Tuple,
                     information_criterion: str) -> Tuple[int, pd.DataFrame]:
     es.indices.refresh(index=pull_request_index)
+    # noinspection PyTypeChecker
     document_count: List[dict] = es.cat.count(index=pull_request_index, params={"format": "json"})
     documents: int = int(document_count[0]['count'])
     print("Documents on index %s: %s" % (pull_request_index, documents))
