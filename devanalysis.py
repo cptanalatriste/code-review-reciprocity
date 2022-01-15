@@ -11,7 +11,8 @@ from matplotlib.figure import Figure
 from statsmodels.tsa.api import VAR
 from statsmodels.tsa.seasonal import seasonal_decompose, DecomposeResult
 from statsmodels.tsa.stattools import adfuller
-from statsmodels.tsa.vector_ar.hypothesis_test_results import CausalityTestResults, WhitenessTestResults
+from statsmodels.tsa.vector_ar.hypothesis_test_results import CausalityTestResults, WhitenessTestResults, \
+    NormalityTestResults
 from statsmodels.tsa.vector_ar.irf import IRAnalysis
 from statsmodels.tsa.vector_ar.var_model import VARResults, LagOrderResults
 
@@ -60,12 +61,13 @@ def check_causality(variables: Tuple, training_result: VARResults, causality_thr
 
 
 def fit_var_model(var_model: VAR, information_criterion: str, user_login: str) -> Tuple[
-    VARResults, WhitenessTestResults]:
+    VARResults, WhitenessTestResults, NormalityTestResults]:
     order_results: LagOrderResults = var_model.select_order()
     candidate_order: int = order_results.selected_orders[information_criterion]
 
     training_result: VARResults = var_model.fit(maxlags=candidate_order)
     whiteness_result: WhitenessTestResults = training_result.test_whiteness(nlags=ceil(candidate_order * 1.5))
+    normality_result: NormalityTestResults = training_result.test_normality()
 
     while whiteness_result.conclusion == "reject" and candidate_order <= 12:
         candidate_order += 1
@@ -73,8 +75,9 @@ def fit_var_model(var_model: VAR, information_criterion: str, user_login: str) -
             user_login, candidate_order))
         training_result: VARResults = var_model.fit(maxlags=candidate_order)
         whiteness_result: WhitenessTestResults = training_result.test_whiteness(nlags=ceil(candidate_order * 1.5))
+        normality_result: NormalityTestResults = training_result.test_normality()
 
-    return training_result, whiteness_result
+    return training_result, whiteness_result, normality_result
 
 
 def do_structural_analysis(variables: Tuple, training_result: VARResults, periods: int,
@@ -86,6 +89,9 @@ def do_structural_analysis(variables: Tuple, training_result: VARResults, period
         impulse_response: IRAnalysis = training_result.irf(periods=periods)
         impulse_response.plot(figsize=(15, 15))
         plt.savefig(IMAGE_DIRECTORY + "%s_%s_impulse_response_%s_%i.png" % (
+            user_login, project, calendar_interval, index))
+        impulse_response.plot_cum_effects(figsize=(15, 15))
+        plt.savefig(IMAGE_DIRECTORY + "%s_%s_cumulative_response_%s_%i.png" % (
             user_login, project, calendar_interval, index))
 
         variance_decomposition = training_result.fevd(periods=periods)
@@ -107,9 +113,14 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, varia
     test_dataset: pd.DataFrame = consolidated_dataframe[-test_observations:]
     print("%s Train data: %d Test data: %d" % (user_login, len(train_dataset), len(test_dataset)))
 
+    var_order_key: str = "var_order"
+    serial_correlation_key: str = "serial_correlation"
+    residual_white_noise_key: str = "residual_white_noise"
+
     result_analysis: dict[str, Any] = {
-        "var_order": set(),
-        "serial_correlation": set()
+        var_order_key: set(),
+        serial_correlation_key: set(),
+        residual_white_noise_key: set()
     }
 
     for permutation_index, permutation in enumerate(itertools.permutations(variables)):
@@ -117,17 +128,25 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, varia
         train_dataset: pd.DataFrame = train_dataset[list(permutation)]
 
         var_model: VAR = VAR(train_dataset)
-        training_result, whiteness_result = fit_var_model(var_model, information_criterion, user_login)
+        training_result, whiteness_result, normality_result = fit_var_model(var_model, information_criterion,
+                                                                            user_login)
         print(training_result.summary())
         print(whiteness_result.summary())
+        print(normality_result.summary())
 
-        result_analysis["var_order"].add(training_result.k_ar)
+        result_analysis[var_order_key].add(training_result.k_ar)
 
         if whiteness_result.conclusion == "reject":
             logging.error("ALERT! Serial correlation found in the residuals for user %s" % user_login)
-            result_analysis["serial_correlation"].add(True)
+            result_analysis[serial_correlation_key].add(True)
         else:
-            result_analysis["serial_correlation"].add(False)
+            result_analysis[serial_correlation_key].add(False)
+
+        if normality_result.conclusion == "reject":
+            logging.error("ALERT! Residuals are NOT Gaussian white noise for user %s" % user_login)
+            result_analysis[residual_white_noise_key].add(False)
+        else:
+            result_analysis[residual_white_noise_key].add(True)
 
         causality_results: dict[str, bool] = do_structural_analysis(variables, training_result, periods, user_login,
                                                                     project, calendar_interval, permutation_index)
@@ -191,7 +210,7 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, va
     consolidated_dataframe = consolidate_dataframe(es, pull_request_index, user_login, variables, calendar_interval)
     data_points: int = len(consolidated_dataframe)
     if not len(consolidated_dataframe):
-        print("No data points for user %s" % user_login)
+        print("No data points for user %s on index %s" % (user_login, pull_request_index))
         return None
 
     print("Data points for user %s: %d. Calendar interval: %s" % (user_login, data_points, calendar_interval))
