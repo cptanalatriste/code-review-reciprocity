@@ -1,7 +1,6 @@
 import itertools
 import logging
 import traceback
-from math import sqrt
 from typing import Tuple, Any, Optional, List
 
 import matplotlib.pyplot as plt
@@ -10,17 +9,12 @@ from elasticsearch import Elasticsearch
 from matplotlib.figure import Figure
 from statsmodels.tsa.api import VAR
 from statsmodels.tsa.seasonal import seasonal_decompose, DecomposeResult
-from statsmodels.tsa.stattools import adfuller
-from statsmodels.tsa.vector_ar.hypothesis_test_results import CausalityTestResults, WhitenessTestResults, \
-    NormalityTestResults
-from statsmodels.tsa.vector_ar.irf import IRAnalysis
-from statsmodels.tsa.vector_ar.var_model import VARResults, LagOrderResults
 
 from aggregation import PRS_REVIEWED_AND_MERGED, PRS_AUTHORED_AND_MERGED, get_prs_reviewed_and_merged, get_prs_authored, \
     get_prs_authored_and_merged, get_all_mergers, PRS_AUTHORED
-
-IMAGE_DIRECTORY: str = "img/"
-TEXT_DIRECTORY: str = "txt/"
+from config import IMAGE_DIRECTORY, TEXT_DIRECTORY
+from structuralanalysis import do_structural_analysis
+from varmodelfit import check_stationarity, fit_var_model
 
 
 def plot_dataframe(consolidated_dataframe: pd.DataFrame, plot_title: str) -> None:
@@ -28,106 +22,6 @@ def plot_dataframe(consolidated_dataframe: pd.DataFrame, plot_title: str) -> Non
     plt.style.use('fivethirtyeight')
     _ = consolidated_dataframe.plot(subplots=True, linewidth=2, fontsize=12, title=plot_title)
     plt.savefig(IMAGE_DIRECTORY + plot_title + ".png")
-
-
-def check_stationarity(consolidated_dataframe: pd.DataFrame, user_login: str, data_column: str,
-                       threshold: float = 0.05) -> bool:
-    # noinspection PyTypeChecker
-    test_result: list[float] = adfuller(consolidated_dataframe[data_column])
-    adf_statistic: float = test_result[0]
-    p_value: float = test_result[1]
-    if p_value <= threshold:
-        print("%s is stationary for user %s. ADF statistic: %f, p-value: %f" % (
-            data_column, user_login, adf_statistic, p_value))
-        return True
-
-    print("%s is NOT stationary for user %s. ADF statistic: %f, p-value: %f" % (
-        data_column, user_login, adf_statistic, p_value))
-    return True
-
-
-def check_causality(variables: Tuple, training_result: VARResults, user_login: str, permutation_index: int,
-                    causality_threshold=0.05) -> dict[str, bool]:
-    test_results: dict[str, Any] = {}
-    for cause_data_column in variables:
-        for effect_data_column in variables:
-            if cause_data_column != effect_data_column:
-                causality_results: CausalityTestResults = training_result.test_causality(causing=cause_data_column,
-                                                                                         caused=effect_data_column,
-                                                                                         kind='wald',
-                                                                                         signif=causality_threshold)
-
-                with open(TEXT_DIRECTORY + "user_{}_permutation_{}_analysis_results.txt".format(user_login,
-                                                                                                permutation_index),
-                          "a") as file:
-                    file.write(str(causality_results.summary()) + "\n")
-
-                granger_causality: bool = causality_results.conclusion == "reject"
-                test_results[cause_data_column + "->" + effect_data_column] = granger_causality
-                print(causality_results.summary())
-
-    return test_results
-
-
-def get_lags_for_whiteness_test(user_login: str, sample_size: int, candidate_order) -> int:
-    lags_for_whiteness: int = max(round(sqrt(sample_size)), candidate_order + 1)
-    logging.info(
-        "User {}: Portmanteau test using lags {} for VAR({}) and {} samples".format(user_login, lags_for_whiteness,
-                                                                                    candidate_order, sample_size))
-    return lags_for_whiteness
-
-
-def fit_var_model(var_model: VAR, information_criterion: str, user_login: str, sample_size: int) -> Tuple[
-    VARResults, WhitenessTestResults, NormalityTestResults, LagOrderResults]:
-    order_results: LagOrderResults = var_model.select_order()
-    candidate_order: int = order_results.selected_orders[information_criterion]
-
-    training_result: VARResults = var_model.fit(maxlags=candidate_order)
-    whiteness_result: WhitenessTestResults = training_result.test_whiteness(
-        nlags=get_lags_for_whiteness_test(user_login, sample_size, candidate_order))
-    normality_result: NormalityTestResults = training_result.test_normality()
-
-    while whiteness_result.conclusion == "reject" and candidate_order <= 12:
-        candidate_order += 1
-        logging.warning("ALERT! Serial correlation in residuals for user %s. Increasing lag order to %d" % (
-            user_login, candidate_order))
-        training_result: VARResults = var_model.fit(maxlags=candidate_order)
-        whiteness_result: WhitenessTestResults = training_result.test_whiteness(
-            nlags=get_lags_for_whiteness_test(user_login, sample_size, candidate_order))
-        normality_result: NormalityTestResults = training_result.test_normality()
-
-    print(training_result.summary())
-    print(whiteness_result.summary())
-    print(normality_result.summary())
-
-    return training_result, whiteness_result, normality_result, order_results
-
-
-def do_structural_analysis(variables: Tuple, training_result: VARResults, periods: int,
-                           user_login: str, project: str, calendar_interval: str, permutation_index: int) -> dict[
-    str, bool]:
-    causality_results: dict[str, bool] = {}
-    try:
-        causality_results = check_causality(variables, training_result, user_login, permutation_index)
-
-        impulse_response: IRAnalysis = training_result.irf(periods=periods)
-        impulse_response.plot(figsize=(15, 15))
-        plt.savefig(IMAGE_DIRECTORY + "%s_%s_impulse_response_%s_%i.png" % (
-            user_login, project, calendar_interval, permutation_index))
-        impulse_response.plot_cum_effects(figsize=(15, 15))
-        plt.savefig(IMAGE_DIRECTORY + "%s_%s_cumulative_response_%s_%i.png" % (
-            user_login, project, calendar_interval, permutation_index))
-
-        variance_decomposition = training_result.fevd(periods=periods)
-        variance_decomposition.plot(figsize=(15, 15))
-        plt.savefig(IMAGE_DIRECTORY + "%s_%s_variance_decomposition_%s_%i.png" % (
-            user_login, project, calendar_interval, permutation_index))
-
-    except Exception:
-        logging.error(traceback.format_exc())
-        logging.error("Cannot do structural analysis for user %s" % user_login)
-    finally:
-        return causality_results
 
 
 def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, variables: Tuple, project: str,
