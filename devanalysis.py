@@ -241,7 +241,8 @@ def consolidate_dataframe(es: Elasticsearch, pull_request_index: str, user_login
 def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, variables: Tuple, calendar_interval: str,
                  information_criterion: str,
                  project: str) -> Optional[dict[str, Any]]:
-    consolidated_dataframe = consolidate_dataframe(es, pull_request_index, user_login, variables, calendar_interval)
+    consolidated_dataframe: pd.DataFrame = consolidate_dataframe(es, pull_request_index, user_login, variables,
+                                                                 calendar_interval)
     data_points: int = len(consolidated_dataframe)
     if not len(consolidated_dataframe):
         print("No data points for user %s on index %s" % (user_login, pull_request_index))
@@ -256,7 +257,9 @@ def analyse_user(es: Elasticsearch, pull_request_index: str, user_login: str, va
     }
 
     for column in variables:
-        analysis_result[column] = consolidated_dataframe[column].sum()
+        metric_series: pd.Series = consolidated_dataframe[column]
+        analysis_result[column] = metric_series.sum()
+        analysis_result[column + "_active"] = len(metric_series[metric_series > 0])
 
     after_differencing_data = consolidated_dataframe.diff()
     after_differencing_data = after_differencing_data.dropna()
