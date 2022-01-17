@@ -201,6 +201,7 @@ def analyse_project(es: Elasticsearch, pull_request_index: str, calendar_interva
                                                          calendar_interval,
                                                          information_criterion, pull_request_index)
             if user_analysis:
+                user_analysis['index_documents'] = documents
                 merger_data.append(user_analysis)
         except Exception:
             logging.error(traceback.format_exc())
