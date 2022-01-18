@@ -43,7 +43,7 @@ def fit_var_model(var_model: VAR, information_criterion: str, user_login: str, s
         nlags=get_lags_for_whiteness_test(user_login, sample_size, candidate_order))
     normality_result: NormalityTestResults = training_result.test_normality()
 
-    while whiteness_result.conclusion == "reject" and candidate_order <= 12:
+    while whiteness_result.conclusion == "reject" and candidate_order < 12:
         candidate_order += 1
         logging.warning("ALERT! Serial correlation in residuals for user %s. Increasing lag order to %d" % (
             user_login, candidate_order))
