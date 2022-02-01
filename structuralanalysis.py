@@ -41,15 +41,20 @@ def do_structural_analysis(variables: Tuple, training_result: VARResults, period
         causality_results = check_causality(variables, training_result, user_login, permutation_index)
 
         impulse_response: IRAnalysis = training_result.irf(periods=periods)
-        impulse_response.plot(figsize=(15, 15))
-        plt.savefig(IMAGE_DIRECTORY + "%s_%s_impulse_response_%s_%i.png" % (
-            user_login, project, calendar_interval, permutation_index))
-        impulse_response.plot_cum_effects(figsize=(15, 15))
-        plt.savefig(IMAGE_DIRECTORY + "%s_%s_cumulative_response_%s_%i.png" % (
-            user_login, project, calendar_interval, permutation_index))
+        for cause_data_column in variables:
+            for effect_data_column in variables:
+                impulse_response.plot(impulse=cause_data_column, response=effect_data_column)
+                plt.savefig(IMAGE_DIRECTORY + "{}_{}_irf_{}_{}_{}_{}.png".format(user_login, project, cause_data_column,
+                                                                                 effect_data_column, calendar_interval,
+                                                                                 permutation_index))
+                impulse_response.plot_cum_effects(impulse=cause_data_column, response=effect_data_column)
+                plt.savefig(
+                    IMAGE_DIRECTORY + "{}_{}_cumirf_{}_{}_{}_{}.png".format(user_login, project, cause_data_column,
+                                                                            effect_data_column, calendar_interval,
+                                                                            permutation_index))
 
         variance_decomposition = training_result.fevd(periods=periods)
-        variance_decomposition.plot(figsize=(15, 15))
+        variance_decomposition.plot()
         plt.savefig(IMAGE_DIRECTORY + "%s_%s_variance_decomposition_%s_%i.png" % (
             user_login, project, calendar_interval, permutation_index))
 

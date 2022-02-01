@@ -53,10 +53,12 @@ def train_var_model(consolidated_dataframe: pd.DataFrame, user_login: str, varia
                                                                                               user_login,
                                                                                               train_sample_size)
 
+        training_result.plot()
+        plt.savefig(IMAGE_DIRECTORY + "{}_{}_var_result_{}_{}.png".format(user_login, project, calendar_interval,
+                                                                          permutation_index))
         user_report_file: str = TEXT_DIRECTORY + "user_{}_permutation_{}_analysis_results.txt".format(user_login,
                                                                                                       permutation_index)
         with open(user_report_file, "a") as file:
-            file.truncate()
             file.write(str(var_order_result.summary()) + "\n")
             file.write(str(training_result.summary()) + "\n")
             file.write(str(whiteness_result.summary()) + "\n")
